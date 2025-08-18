@@ -1,0 +1,1 @@
+# Lightning Network Research Gossip Processing Pipeline
