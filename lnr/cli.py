@@ -80,10 +80,9 @@ def web(ctx):
 
 @cli.command()
 @click.option('--dry-run', is_flag=True, help='Preview actions without executing')
-@click.option('--pattern', default='gossip-*.gsp', help='File pattern to match')
 @click.option('--annex-dir', default=None, help='Path to git-annex directory (default: from config)')
 @click.pass_context
-def upload(ctx, dry_run, pattern, annex_dir):
+def upload(ctx, dry_run, annex_dir):
     """Upload unannexed files to GCS and add them to git-annex."""
     config = ctx.obj['config']
 
@@ -92,7 +91,7 @@ def upload(ctx, dry_run, pattern, annex_dir):
         config.git_annex_directory = annex_dir
 
     service = UploaderService(config, dry_run=dry_run)
-    service.run(pattern=pattern)
+    service.run()
 
 
 if __name__ == "__main__":
