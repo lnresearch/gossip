@@ -204,9 +204,9 @@ class ArchiverService:
 
         # Generate new filename
         if self.config.archive_rotation == "hourly":
-            filename = f"gossip-{timestamp.strftime('%Y%m%d%H%M')}.pb"
+            filename = f"gossip-{timestamp.strftime('%Y%m%d%H%M')}.gsp"
         else:  # daily
-            filename = f"gossip-{timestamp.strftime('%Y%m%d')}0000.pb"
+            filename = f"gossip-{timestamp.strftime('%Y%m%d')}0000.gsp"
 
         # Use temp directory for active file
         self.current_file_path = Path(self.config.archive_temp_directory) / filename

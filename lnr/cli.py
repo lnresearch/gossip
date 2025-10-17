@@ -11,6 +11,7 @@ from .config import Config
 from .services.glbridge import GlbridgeService
 from .services.dedup import DedupService
 from .services.archiver import ArchiverService
+from .services.uploader import UploaderService
 
 console = Console()
 
@@ -75,6 +76,23 @@ def web(ctx):
         reload=False,
         log_level=config.log_level.lower()
     )
+
+
+@cli.command()
+@click.option('--dry-run', is_flag=True, help='Preview actions without executing')
+@click.option('--pattern', default='gossip-*.gsp', help='File pattern to match')
+@click.option('--annex-dir', default=None, help='Path to git-annex directory (default: from config)')
+@click.pass_context
+def upload(ctx, dry_run, pattern, annex_dir):
+    """Upload unannexed files to GCS and add them to git-annex."""
+    config = ctx.obj['config']
+
+    # Override annex directory if provided
+    if annex_dir:
+        config.git_annex_directory = annex_dir
+
+    service = UploaderService(config, dry_run=dry_run)
+    service.run(pattern=pattern)
 
 
 if __name__ == "__main__":

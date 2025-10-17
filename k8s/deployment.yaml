@@ -40,11 +40,23 @@ spec:
           value: "8000"
         - name: LOG_LEVEL
           value: "INFO"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/var/secrets/google/key.json"
+        - name: GIT_SSH_KEY_PATH
+          value: "/var/secrets/ssh/ssh-privatekey"
+        - name: GIT_SSH_KNOWN_HOSTS_PATH
+          value: "/var/secrets/ssh/known_hosts"
         volumeMounts:
         - name: database-storage
           mountPath: /data/db
         - name: annex-storage
           mountPath: /data/annex
+        - name: gcs-key
+          mountPath: /var/secrets/google
+          readOnly: true
+        - name: git-ssh-key
+          mountPath: /var/secrets/ssh
+          readOnly: true
         resources:
           requests:
             memory: "256Mi"
@@ -73,3 +85,10 @@ spec:
         hostPath:
           path: /var/lib/lnr/annex
           type: DirectoryOrCreate
+      - name: gcs-key
+        secret:
+          secretName: gcs-uploader-key
+      - name: git-ssh-key
+        secret:
+          secretName: git-ssh-key
+          defaultMode: 0400

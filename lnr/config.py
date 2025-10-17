@@ -56,6 +56,14 @@ class Config(BaseSettings):
         default="origin",
         description="GitHub remote name for pushing annex commits"
     )
+    git_ssh_key_path: str = Field(
+        default="",
+        description="Path to SSH private key for git operations (empty = use default SSH)"
+    )
+    git_ssh_known_hosts_path: str = Field(
+        default="",
+        description="Path to SSH known_hosts file (empty = use default)"
+    )
 
     # Syncer configuration
     sync_interval_hours: int = Field(
