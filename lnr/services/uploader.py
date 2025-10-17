@@ -18,7 +18,8 @@ class UploaderService:
     def __init__(self, config: Config, dry_run: bool = False):
         self.config = config
         self.dry_run = dry_run
-        self.annex_dir = Path(config.git_annex_directory)
+        # Convert to absolute path to avoid issues with relative paths
+        self.annex_dir = Path(config.git_annex_directory).resolve()
         self._setup_ssh_env()
 
     def _setup_ssh_env(self) -> None:
@@ -57,12 +58,19 @@ class UploaderService:
         for file_path in daily_dir.glob(pattern):
             # Check if it's a regular file (not a symlink)
             if file_path.is_file() and not file_path.is_symlink():
+                # Check if there's a corresponding .bz2 file that's under git-annex control (symlink)
+                bz2_path = file_path.with_suffix(file_path.suffix + '.bz2')
+                if bz2_path.exists() and bz2_path.is_symlink():
+                    # Already uploaded, skip this file
+                    logger.debug(f"Skipping {file_path.name} - corresponding .bz2 already in git-annex")
+                    continue
+
                 unannexed_files.append(file_path)
 
         return sorted(unannexed_files)
 
     def compress_file(self, file_path: Path) -> Path:
-        """Compress file with bzip2.
+        """Compress file with bzip2 using command-line tool.
 
         Args:
             file_path: Path to file to compress
@@ -78,19 +86,33 @@ class UploaderService:
 
         logger.info(f"Compressing {file_path} to {compressed_path}")
 
-        with open(file_path, 'rb') as f_in:
-            with bz2.BZ2File(compressed_path, 'wb', compresslevel=9) as f_out:
-                shutil.copyfileobj(f_in, f_out)
+        try:
+            # Use command-line bzip2 for better performance
+            # bzip2 -9 creates file.bz2 and removes original file
+            result = subprocess.run(
+                ['bzip2', '-9', str(file_path)],
+                stderr=subprocess.PIPE,
+                text=False,
+                check=True,
+                cwd=file_path.parent
+            )
 
-        original_size = file_path.stat().st_size
-        compressed_size = compressed_path.stat().st_size
-        compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
+            original_size = file_path.stat().st_size
+            compressed_size = compressed_path.stat().st_size
+            compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
 
-        logger.info(f"Compression completed: {self._format_bytes(original_size)} -> "
-                   f"{self._format_bytes(compressed_size)} "
-                   f"(ratio: {compression_ratio:.2%})")
+            logger.info(f"Compression completed: {self._format_bytes(original_size)} -> "
+                       f"{self._format_bytes(compressed_size)} "
+                       f"(ratio: {compression_ratio:.2%})")
 
-        return compressed_path
+            return compressed_path
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to compress file {file_path}: {e.stderr.decode() if e.stderr else str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to compress file {file_path}: {e}")
+            raise
 
     def upload_to_gcs(self, file_path: Path, gcs_path: str) -> str:
         """Upload file to GCS.
@@ -347,14 +369,6 @@ class UploaderService:
             # Step 5: Drop local copy (remove the symlink content, keep the pointer)
             console.print(f"  [yellow]→[/yellow] Dropping local copy...")
             self.drop_local_copy(annex_filename)
-
-            # Step 6: Remove original uncompressed file
-            console.print(f"  [yellow]→[/yellow] Removing original file...")
-            if not self.dry_run and file_path.exists():
-                file_path.unlink()
-                logger.info(f"Removed original file: {file_path}")
-            else:
-                console.print(f"[dim]Would remove: {file_path}[/dim]")
 
             console.print(f"  [bold green]✓[/bold green] Success")
             return True, ""
