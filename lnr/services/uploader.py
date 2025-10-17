@@ -40,14 +40,11 @@ class UploaderService:
             os.environ['GIT_SSH_COMMAND'] = ssh_command
             logger.info(f"Configured GIT_SSH_COMMAND: {ssh_command}")
 
-    def find_unannexed_files(self, pattern: str = "gossip-*.gsp") -> List[Path]:
-        """Find regular files (non-symlinks) matching pattern in annex directory.
-
-        Args:
-            pattern: Glob pattern for files to find
+    def find_unannexed_files(self) -> List[Path]:
+        """Find unannexed files (both .gsp and .gsp.bz2) in annex directory.
 
         Returns:
-            List of Path objects for unannexed files
+            List of Path objects for unannexed files (.gsp files to compress and .gsp.bz2 files not in annex)
         """
         daily_dir = self.annex_dir / "daily"
         if not daily_dir.exists():
@@ -55,19 +52,18 @@ class UploaderService:
             return []
 
         unannexed_files = []
-        for file_path in daily_dir.glob(pattern):
-            # Check if it's a regular file (not a symlink)
-            if file_path.is_file() and not file_path.is_symlink():
-                # Check if there's a corresponding .bz2 file that's under git-annex control (symlink)
-                bz2_path = file_path.with_suffix(file_path.suffix + '.bz2')
-                if bz2_path.exists() and bz2_path.is_symlink():
-                    # Already uploaded, skip this file
-                    logger.debug(f"Skipping {file_path.name} - corresponding .bz2 already in git-annex")
-                    continue
 
+        # Find .gsp files (need compression)
+        for file_path in sorted(daily_dir.glob("gossip-*.gsp")):
+            if file_path.is_file() and not file_path.is_symlink():
                 unannexed_files.append(file_path)
 
-        return sorted(unannexed_files)
+        # Find .gsp.bz2 files that aren't already in git-annex
+        for file_path in sorted(daily_dir.glob("gossip-*.gsp.bz2")):
+            if file_path.is_file() and not file_path.is_symlink():
+                unannexed_files.append(file_path)
+
+        return unannexed_files
 
     def compress_file(self, file_path: Path) -> Path:
         """Compress file with bzip2 using command-line tool.
@@ -78,6 +74,7 @@ class UploaderService:
         Returns:
             Path to compressed file
         """
+        file_path = file_path.resolve()  # Convert to absolute path
         compressed_path = file_path.with_suffix(file_path.suffix + '.bz2')
 
         if self.dry_run:
@@ -87,17 +84,18 @@ class UploaderService:
         logger.info(f"Compressing {file_path} to {compressed_path}")
 
         try:
+            # Store original size before compression (file will be deleted by bzip2)
+            original_size = file_path.stat().st_size
+
             # Use command-line bzip2 for better performance
             # bzip2 -9 creates file.bz2 and removes original file
             result = subprocess.run(
                 ['bzip2', '-9', str(file_path)],
                 stderr=subprocess.PIPE,
                 text=False,
-                check=True,
-                cwd=file_path.parent
+                check=True
             )
 
-            original_size = file_path.stat().st_size
             compressed_size = compressed_path.stat().st_size
             compression_ratio = compressed_size / original_size if original_size > 0 else 1.0
 
@@ -334,7 +332,7 @@ class UploaderService:
             raise
 
     def process_file(self, file_path: Path) -> Tuple[bool, str]:
-        """Process a single unannexed file.
+        """Process a single unannexed file (.gsp or .gsp.bz2).
 
         Args:
             file_path: Path to file to process
@@ -344,13 +342,20 @@ class UploaderService:
         """
         try:
             filename = file_path.name
-            compressed_filename = f"{filename}.bz2"
-
             console.print(f"\n[bold cyan]Processing: {filename}[/bold cyan]")
 
-            # Step 1: Compress file
-            console.print(f"  [yellow]→[/yellow] Compressing...")
-            compressed_path = self.compress_file(file_path)
+            # Handle .gsp files (need compression)
+            if filename.endswith('.gsp'):
+                console.print(f"  [yellow]→[/yellow] Compressing...")
+                compressed_path = self.compress_file(file_path)
+                compressed_filename = compressed_path.name
+            # Handle .gsp.bz2 files (already compressed)
+            elif filename.endswith('.gsp.bz2'):
+                console.print(f"  [yellow]→[/yellow] Using pre-compressed file...")
+                compressed_path = file_path
+                compressed_filename = filename
+            else:
+                return False, f"Unknown file type: {filename}"
 
             # Step 2: Upload to GCS
             console.print(f"  [yellow]→[/yellow] Uploading to GCS...")
@@ -379,12 +384,8 @@ class UploaderService:
             logger.error(f"Failed to process {file_path}: {e}")
             return False, error_msg
 
-    def run(self, pattern: str = "gossip-*.gsp") -> None:
-        """Run the uploader service to process all unannexed files.
-
-        Args:
-            pattern: Glob pattern for files to process
-        """
+    def run(self) -> None:
+        """Run the uploader service to process all unannexed files."""
         console.print("[bold]LNR Uploader Service[/bold]")
         console.print(f"Annex directory: {self.annex_dir}")
 
@@ -392,8 +393,8 @@ class UploaderService:
             console.print("[yellow]DRY RUN MODE - No changes will be made[/yellow]\n")
 
         # Find unannexed files
-        console.print(f"\n[bold]Scanning for unannexed files matching: {pattern}[/bold]")
-        unannexed_files = self.find_unannexed_files(pattern)
+        console.print(f"\n[bold]Scanning for unannexed files (.gsp and .gsp.bz2)...[/bold]")
+        unannexed_files = self.find_unannexed_files()
 
         if not unannexed_files:
             console.print("[green]No unannexed files found![/green]")
