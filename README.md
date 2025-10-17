@@ -83,6 +83,94 @@ lnr-web services-only
 Upstream RabbitMQ → glbridge → lnr.gossip.raw → dedup → lnr.gossip.uniq → archiver → GSP files
 ```
 
+## Deployment
+
+### Prerequisites
+
+- Kubernetes cluster with configured kubectl context
+- Docker registry access
+- GCS bucket for archive storage
+- GitHub repository for git-annex synchronization
+
+### Kubernetes with Skaffold
+
+Deploy to Kubernetes using skaffold:
+
+```bash
+# Deploy to production
+skaffold run --profile prod
+
+# Deploy to development
+skaffold run --profile dev
+
+# Build and deploy with auto-rebuild on changes
+skaffold dev --profile dev
+```
+
+### Secrets Setup
+
+Before deploying to Kubernetes, create the required secrets:
+
+#### GCS Service Account Secret
+
+```bash
+# Create namespace
+kubectl create namespace lnr
+
+# Create GCS credentials secret (from service account JSON)
+kubectl create secret generic gcs-uploader-key \
+  --from-file=key.json=service-account.json \
+  -n lnr
+```
+
+#### SSH Key Secret
+
+```bash
+# Create SSH key for git operations
+ssh-keygen -t ed25519 -C "lnr-gossip" -f ~/.ssh/lnr-gossip-key -N ""
+
+# Add public key to GitHub deploy keys
+cat ~/.ssh/lnr-gossip-key.pub
+
+# Create SSH secret in Kubernetes
+kubectl create secret generic git-ssh-key \
+  --from-file=ssh-privatekey=~/.ssh/lnr-gossip-key \
+  --from-file=known_hosts=~/.ssh/known_hosts \
+  -n lnr
+```
+
+### Configuration for Production
+
+Key environment variables in `k8s/deployment.yaml`:
+
+- `UPSTREAM_RABBITMQ_URL`: Upstream RabbitMQ connection URL
+- `UPSTREAM_QUEUE_NAME`: Upstream exchange name (default: `router.gossip`)
+- `ARCHIVE_ROTATION`: `hourly` or `daily` (default: `daily`)
+- `GOOGLE_APPLICATION_CREDENTIALS`: Path to GCS credentials (default: `/var/secrets/google/key.json`)
+- `GIT_SSH_KEY_PATH`: Path to SSH private key (default: `/var/secrets/ssh/ssh-privatekey`)
+
+### Upload CLI Command
+
+The uploader service can be run locally or in Kubernetes to sync archived files to GCS and git-annex:
+
+```bash
+# Local dry-run (preview operations)
+GOOGLE_APPLICATION_CREDENTIALS=service-account.json \
+GIT_SSH_KEY_PATH=~/.ssh/lnr-gossip-key \
+uv run python -m lnr.cli upload --annex-dir /path/to/annex --dry-run
+
+# Local execution
+GOOGLE_APPLICATION_CREDENTIALS=service-account.json \
+GIT_SSH_KEY_PATH=~/.ssh/lnr-gossip-key \
+uv run python -m lnr.cli upload --annex-dir /path/to/annex
+```
+
+The uploader handles:
+- Compression of `.gsp` files with bzip2
+- Upload of compressed files to GCS
+- Integration with git-annex for distributed storage
+- Automatic git commits and syncing
+
 ## Development
 
 ```bash
