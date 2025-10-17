@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lnr-gossip
+  namespace: lnr
+  labels:
+    app: lnr-gossip
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+  - hosts:
+    - lnr.media.snyke.net
+    secretName: lnr-gossip-tls
+  rules:
+  - host: lnr.media.snyke.net
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: lnr-gossip
+            port:
+              number: 8000

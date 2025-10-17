@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Optional
 import aio_pika
+import aio_pika.exceptions
 from aio_pika import Message, ExchangeType
 from ..config import Config
 from ..status import status_manager, ServiceStatus
@@ -41,7 +42,7 @@ class GlbridgeService:
             # Declare local exchange
             self.raw_exchange = await self.local_channel.declare_exchange(
                 "lnr.gossip.raw",
-                ExchangeType.DIRECT,
+                ExchangeType.FANOUT,
                 durable=True
             )
             
@@ -80,32 +81,65 @@ class GlbridgeService:
     
     async def _process_message(self, message: aio_pika.IncomingMessage) -> None:
         """Process a message from upstream and forward to local exchange."""
-        async with message.process():
-            try:
-                # Validate message starts with Lightning Network gossip message types
-                if not self._is_valid_gossip_message(message.body):
-                    logger.debug(f"Ignoring non-gossip message of length {len(message.body)}")
-                    return
-                
-                # Forward message to local exchange
-                local_message = Message(
-                    message.body,
-                    headers=message.headers or {},
-                    timestamp=message.timestamp,
-                )
-                
-                await self.raw_exchange.publish(local_message, routing_key="")
-                
-                await status_manager.increment_message_count("glbridge")
-                logger.debug(f"Forwarded gossip message of {len(message.body)} bytes")
-                
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                await status_manager.update_service_status(
-                    "glbridge",
-                    ServiceStatus.ERROR,
-                    f"Error processing message: {e}"
-                )
+        try:
+            async with message.process():
+                try:
+                    # Validate message starts with Lightning Network gossip message types
+                    if not self._is_valid_gossip_message(message.body):
+                        logger.debug(f"Ignoring non-gossip message of length {len(message.body)}")
+                        return
+                    
+                    # Check if local channel is still open
+                    if self.local_channel and self.local_channel.is_closed:
+                        logger.error("Local channel is closed, cannot publish message")
+                        await status_manager.update_service_status(
+                            "glbridge",
+                            ServiceStatus.ERROR,
+                            "Local channel closed unexpectedly"
+                        )
+                        return
+                    
+                    # Forward message to local exchange
+                    local_message = Message(
+                        message.body,
+                        headers=message.headers or {},
+                        timestamp=message.timestamp,
+                    )
+                    
+                    await self.raw_exchange.publish(local_message, routing_key="")
+                    
+                    await status_manager.increment_message_count("glbridge")
+                    logger.debug(f"Forwarded gossip message of {len(message.body)} bytes")
+                    
+                except aio_pika.exceptions.ChannelInvalidStateError as e:
+                    logger.error(f"Channel invalid state error: {e}")
+                    await status_manager.update_service_status(
+                        "glbridge",
+                        ServiceStatus.ERROR,
+                        f"Channel invalid state: {e}"
+                    )
+                except aio_pika.exceptions.ConnectionClosed as e:
+                    logger.error(f"Connection closed error: {e}")
+                    await status_manager.update_service_status(
+                        "glbridge",
+                        ServiceStatus.ERROR,
+                        f"Connection closed: {e}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+                    await status_manager.update_service_status(
+                        "glbridge",
+                        ServiceStatus.ERROR,
+                        f"Error processing message: {e}"
+                    )
+        except Exception as e:
+            # This catches errors from message.process() context manager
+            logger.error(f"Error in message processing context: {e}")
+            await status_manager.update_service_status(
+                "glbridge",
+                ServiceStatus.ERROR,
+                f"Message context error: {e}"
+            )
     
     def _is_valid_gossip_message(self, data: bytes) -> bool:
         """Check if message is valid (raw Lightning or protobuf-wrapped gossip)."""
@@ -131,6 +165,25 @@ class GlbridgeService:
         # The dedup process is designed to strip protobuf envelopes and validate
         return True
     
+    def _check_connections_healthy(self) -> bool:
+        """Check if connections are healthy."""
+        upstream_ok = (self.upstream_connection and 
+                      not self.upstream_connection.is_closed and
+                      self.upstream_channel and 
+                      not self.upstream_channel.is_closed)
+        
+        local_ok = (self.local_connection and 
+                   not self.local_connection.is_closed and
+                   self.local_channel and 
+                   not self.local_channel.is_closed)
+        
+        if not upstream_ok:
+            logger.warning("Upstream connection/channel unhealthy")
+        if not local_ok:
+            logger.warning("Local connection/channel unhealthy")
+            
+        return upstream_ok and local_ok
+    
     async def stop(self) -> None:
         """Stop the glbridge service."""
         logger.info("Stopping glbridge service")
@@ -149,8 +202,25 @@ class GlbridgeService:
         await self.start()
         
         try:
+            health_check_interval = 30  # Check every 30 seconds
+            last_health_check = 0
+            
             while self.running:
                 await asyncio.sleep(1)
+                
+                # Periodic health check
+                last_health_check += 1
+                if last_health_check >= health_check_interval:
+                    if not self._check_connections_healthy():
+                        logger.error("Connection health check failed")
+                        await status_manager.update_service_status(
+                            "glbridge",
+                            ServiceStatus.ERROR,
+                            "Connection health check failed"
+                        )
+                        # Could add reconnection logic here in the future
+                    last_health_check = 0
+                    
         except KeyboardInterrupt:
             logger.info("Received keyboard interrupt")
         finally:

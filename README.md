@@ -8,7 +8,7 @@ The pipeline consists of three main services:
 
 1. **glbridge**: Ingests gossip messages from upstream RabbitMQ and publishes to local `lnr.gossip.raw` exchange
 2. **dedup**: Deduplicates messages using SQLite and publishes unique messages to `lnr.gossip.uniq` exchange  
-3. **archiver**: Archives unique messages to daily/hourly CSV snapshot files
+3. **archiver**: Archives unique messages to daily/hourly GSP\x01 format snapshot files
 
 ## Installation
 
@@ -80,7 +80,7 @@ lnr-web services-only
 ## Message Flow
 
 ```
-Upstream RabbitMQ → glbridge → lnr.gossip.raw → dedup → lnr.gossip.uniq → archiver → CSV files
+Upstream RabbitMQ → glbridge → lnr.gossip.raw → dedup → lnr.gossip.uniq → archiver → GSP files
 ```
 
 ## Development
@@ -99,9 +99,41 @@ ruff check .
 mypy lnr/
 ```
 
-## Lightning Network Message Types
+## Archive File Format (GSP\x01)
+
+Archive files use the GSP\x01 binary format for efficient storage of Lightning Network gossip messages.
+
+### Format Structure
+
+```
+GSP File := Header + Messages*
+Header   := "GSP\x01" (4 bytes, version 1)
+Messages := CompactSize(length) + message_data
+```
+
+### CompactSize Encoding
+
+CompactSize is a variable-length integer encoding format from the Bitcoin protocol:
+
+| Value Range | First Byte | Additional Bytes | Byte Order |
+|-------------|------------|------------------|------------|  
+| 0-252       | value      | none             | -          |
+| 253-65535   | 253 (0xFD) | 2 bytes          | big-endian |
+| 65536-4294967295 | 254 (0xFE) | 4 bytes     | big-endian |
+| 4294967296+ | 255 (0xFF) | 8 bytes          | big-endian |
+
+### Example
+
+```
+File Header: GSP\x01 (0x47 0x53 0x50 0x01)
+Message 1:   CompactSize(138) + 138 bytes of Lightning gossip data
+Message 2:   CompactSize(150) + 150 bytes of Lightning gossip data
+...
+```
+
+### Lightning Network Message Types
 
 The pipeline processes these Lightning Network gossip message types:
-- `0x0100`: channel_announcement
+- `0x0100`: channel_announcement  
 - `0x0101`: node_announcement
 - `0x0102`: channel_update

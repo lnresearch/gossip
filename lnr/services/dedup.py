@@ -38,7 +38,7 @@ class DedupService:
             # Declare exchanges
             self.raw_exchange = await self.channel.declare_exchange(
                 "lnr.gossip.raw",
-                ExchangeType.DIRECT,
+                ExchangeType.FANOUT,
                 durable=True
             )
             
@@ -54,8 +54,8 @@ class DedupService:
                 durable=True
             )
             
-            # Bind queue to raw exchange
-            await raw_queue.bind(self.raw_exchange)
+            # Bind queue to raw exchange with empty routing key
+            await raw_queue.bind(self.raw_exchange, routing_key="")
             
             # Start consuming
             await raw_queue.consume(self._process_message)
@@ -111,24 +111,71 @@ class DedupService:
                 )
     
     def _is_valid_gossip_message(self, data: bytes) -> bool:
-        """Check if message starts with valid Lightning Network gossip message types."""
+        """Check if message is valid (raw Lightning or protobuf-wrapped gossip)."""
         if len(data) < 2:
             return False
         
-        # Lightning Network gossip message types
+        # Raw Lightning Network gossip message types
         # 0x0100 = channel_announcement
         # 0x0101 = node_announcement  
         # 0x0102 = channel_update
-        valid_types = [b'\x01\x00', b'\x01\x01', b'\x01\x02']
+        raw_lightning_types = [b'\x01\x00', b'\x01\x01', b'\x01\x02']
         
-        return data[:2] in valid_types
+        # Check for raw Lightning messages
+        if data[:2] in raw_lightning_types:
+            return True
+        
+        # Check for protobuf-wrapped messages (common patterns from upstream)
+        # Messages starting with 0x0a typically indicate protobuf varint encoding
+        if data[0:1] == b'\x0a':
+            return True
+            
+        return False
     
     def _strip_protobuf_envelope(self, data: bytes) -> bytes:
         """Strip protobuf envelope if present, otherwise return original data."""
-        # This is a placeholder - in a real implementation, you would
-        # detect and strip protobuf envelopes based on the actual format
-        # For now, we'll just return the original data
-        return data
+        if len(data) < 2:
+            return data
+            
+        # Check if this looks like a protobuf message (starts with varint)
+        if data[0:1] != b'\x0a':
+            # Not a protobuf message, return as-is
+            return data
+            
+        try:
+            # Parse protobuf varint to find the length of the inner message
+            offset = 1  # Skip the field tag (0x0a)
+            length = 0
+            shift = 0
+            
+            # Decode varint length
+            while offset < len(data):
+                byte = data[offset]
+                length |= (byte & 0x7F) << shift
+                offset += 1
+                if (byte & 0x80) == 0:
+                    break
+                shift += 7
+                if shift >= 64:  # Prevent infinite loop
+                    return data
+            
+            # Extract the inner message
+            if offset + length <= len(data):
+                inner_data = data[offset:offset + length]
+                
+                # Validate that the inner data looks like a Lightning message
+                if len(inner_data) >= 2:
+                    lightning_types = [b'\x01\x00', b'\x01\x01', b'\x01\x02']
+                    if inner_data[:2] in lightning_types:
+                        logger.debug(f"Stripped protobuf envelope: {len(data)} -> {len(inner_data)} bytes")
+                        return inner_data
+                        
+            # If we can't parse or validate, return original
+            return data
+            
+        except Exception as e:
+            logger.debug(f"Failed to strip protobuf envelope: {e}")
+            return data
     
     async def _is_unique_message(self, data: bytes) -> bool:
         """Check if message is unique and store it if it is."""
@@ -140,6 +187,13 @@ class DedupService:
         """Check if message is unique in SQLite database and store if new."""
         conn = sqlite3.connect(self.config.database_path)
         try:
+            # Enable WAL mode for better concurrency
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Additional performance settings
+            conn.execute("PRAGMA synchronous=NORMAL")  # Faster than FULL, still safe in WAL mode
+            conn.execute("PRAGMA cache_size=10000")     # Increase cache size
+            conn.execute("PRAGMA temp_store=memory")    # Use memory for temp storage
+
             # Try to insert the message
             conn.execute("INSERT INTO messages (raw) VALUES (?)", (data,))
             conn.commit()

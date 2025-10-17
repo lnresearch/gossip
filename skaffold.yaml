@@ -1,0 +1,27 @@
+apiVersion: skaffold/v2beta29
+kind: Config
+metadata:
+  name: lnr-gossip
+build:
+  artifacts:
+  - image: registry.home.snyke.net/lnr/lnr-gossip
+    context: .
+    docker:
+      dockerfile: Dockerfile
+deploy:
+  kubectl:
+    manifests:
+    - k8s/*.yaml
+profiles:
+- name: dev
+  deploy:
+    kubectl:
+      manifests:
+      - k8s/namespace.yaml
+      - k8s/deployment.yaml
+      - k8s/service.yaml
+- name: prod
+  deploy:
+    kubectl:
+      manifests:
+      - k8s/*.yaml

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lnr-gossip
+  namespace: lnr
+  labels:
+    app: lnr-gossip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lnr-gossip
+  template:
+    metadata:
+      labels:
+        app: lnr-gossip
+    spec:
+      containers:
+      - name: lnr-gossip
+        image: registry.home.snyke.net/lnr/lnr-gossip
+        ports:
+        - containerPort: 8000
+          name: web
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://guest:guest@rabbitmq-service.lnr.svc.cluster.local:5672/"
+        - name: UPSTREAM_RABBITMQ_URL
+          value: "amqp://greenlight:23b3469aa4fe8757001c@10.64.4.6/prod"
+        - name: UPSTREAM_QUEUE_NAME
+          value: "router.gossip"
+        - name: DATABASE_PATH
+          value: "/data/db/gossip.db"
+        - name: ARCHIVE_DIRECTORY
+          value: "/data/annex"
+        - name: ARCHIVE_ROTATION
+          value: "daily"
+        - name: WEB_HOST
+          value: "0.0.0.0"
+        - name: WEB_PORT
+          value: "8000"
+        - name: LOG_LEVEL
+          value: "INFO"
+        volumeMounts:
+        - name: database-storage
+          mountPath: /data/db
+        - name: annex-storage
+          mountPath: /data/annex
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: database-storage
+        hostPath:
+          path: /var/lib/lnr/db
+          type: DirectoryOrCreate
+      - name: annex-storage
+        hostPath:
+          path: /var/lib/lnr/annex
+          type: DirectoryOrCreate

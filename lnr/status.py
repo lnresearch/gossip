@@ -22,6 +22,17 @@ class ServiceInfo:
     message_count: int = 0
     error_message: Optional[str] = None
     last_message_time: Optional[datetime] = None
+    
+    # Archiver-specific fields
+    current_archive_messages: int = 0
+    current_archive_bytes: int = 0
+
+    # Syncer-specific fields
+    annex_total_files: int = 0
+    annex_local_files: int = 0
+    annex_remote_files: int = 0
+    annex_total_size: int = 0
+    last_sync_time: Optional[datetime] = None
 
 
 class StatusManager:
@@ -32,6 +43,7 @@ class StatusManager:
             "glbridge": ServiceInfo("glbridge", ServiceStatus.STOPPED, datetime.now()),
             "dedup": ServiceInfo("dedup", ServiceStatus.STOPPED, datetime.now()),
             "archiver": ServiceInfo("archiver", ServiceStatus.STOPPED, datetime.now()),
+            "syncer": ServiceInfo("syncer", ServiceStatus.STOPPED, datetime.now()),
         }
         self._lock = asyncio.Lock()
     
@@ -54,6 +66,31 @@ class StatusManager:
             if service_name in self._services:
                 self._services[service_name].message_count += 1
                 self._services[service_name].last_message_time = datetime.now()
+    
+    async def update_archiver_stats(self, messages: int, bytes_count: int) -> None:
+        """Update archiver-specific statistics."""
+        async with self._lock:
+            if "archiver" in self._services:
+                self._services["archiver"].current_archive_messages = messages
+                self._services["archiver"].current_archive_bytes = bytes_count
+
+    async def update_syncer_stats(
+        self,
+        total_files: int,
+        local_files: int,
+        remote_files: int,
+        total_size: int,
+        last_sync_time: Optional[datetime] = None
+    ) -> None:
+        """Update syncer-specific statistics."""
+        async with self._lock:
+            if "syncer" in self._services:
+                self._services["syncer"].annex_total_files = total_files
+                self._services["syncer"].annex_local_files = local_files
+                self._services["syncer"].annex_remote_files = remote_files
+                self._services["syncer"].annex_total_size = total_size
+                if last_sync_time:
+                    self._services["syncer"].last_sync_time = last_sync_time
     
     async def get_service_info(self, service_name: str) -> Optional[ServiceInfo]:
         """Get information about a specific service."""

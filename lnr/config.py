@@ -7,7 +7,7 @@ class Config(BaseSettings):
     
     # RabbitMQ configuration
     rabbitmq_url: str = Field(
-        default="amqp://guest:guest@localhost:5672/",
+        default="amqp://guest:guest@localhost:35672/",
         description="RabbitMQ connection URL"
     )
     
@@ -28,13 +28,39 @@ class Config(BaseSettings):
     )
     
     # Archive configuration
+    archive_temp_directory: str = Field(
+        default="/data/temp",
+        description="Temporary directory for active archive files"
+    )
     archive_directory: str = Field(
         default="annex/dailies",
         description="Directory for archiving gossip snapshots"
     )
     archive_rotation: str = Field(
-        default="daily",
+        default="hourly",
         description="Archive rotation: 'hourly' or 'daily'"
+    )
+
+    # GCS configuration
+    gcs_bucket_url: str = Field(
+        default="https://storage.googleapis.com/lnresearch/daily/",
+        description="GCS bucket URL for uploading archive files"
+    )
+
+    # Git annex configuration
+    git_annex_directory: str = Field(
+        default="/data/annex/daily",
+        description="Git annex directory for storing file references"
+    )
+    github_remote: str = Field(
+        default="origin",
+        description="GitHub remote name for pushing annex commits"
+    )
+
+    # Syncer configuration
+    sync_interval_hours: int = Field(
+        default=1,
+        description="Interval in hours for syncer operations"
     )
     
     # Web server configuration
@@ -43,7 +69,7 @@ class Config(BaseSettings):
         description="Web server host"
     )
     web_port: int = Field(
-        default=8000,
+        default=8008,
         description="Web server port"
     )
     
