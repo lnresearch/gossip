@@ -34,9 +34,9 @@ class ArchiverService:
         self.current_archive_byte_count = 0
         
         # Ensure directories exist
-        Path(config.archive_temp_directory).mkdir(parents=True, exist_ok=True)
-        Path(config.archive_directory).mkdir(parents=True, exist_ok=True)
-        Path(config.git_annex_directory).mkdir(parents=True, exist_ok=True)
+        Path(config.temp_directory).mkdir(parents=True, exist_ok=True)
+        Path(config.annex_daily_directory).mkdir(parents=True, exist_ok=True)
+        Path(config.database_path).parent.mkdir(parents=True, exist_ok=True)
     
     def calculate_next_flush_time(self) -> Optional[datetime]:
         """Calculate the time of the next archive file rotation."""
@@ -145,7 +145,13 @@ class ArchiverService:
                         self.current_archive_message_count,
                         self.current_archive_byte_count
                     )
-                    
+
+                    # Check if we were in error state and reset to running
+                    service_info = await status_manager.get_service_info("archiver")
+                    if service_info and service_info.status == ServiceStatus.ERROR:
+                        logger.info("Service recovered from error state, resetting to RUNNING")
+                        await status_manager.update_service_status("archiver", ServiceStatus.RUNNING)
+
                     logger.debug(f"Archived message of {len(message.body)} bytes")
                 
             except Exception as e:
@@ -209,7 +215,7 @@ class ArchiverService:
             filename = f"gossip-{timestamp.strftime('%Y%m%d')}0000.gsp"
 
         # Use temp directory for active file
-        self.current_file_path = Path(self.config.archive_temp_directory) / filename
+        self.current_file_path = Path(self.config.temp_directory) / filename
 
         # Open new file in binary mode
         loop = asyncio.get_event_loop()
@@ -285,8 +291,8 @@ class ArchiverService:
             if compressed_path and compressed_path.exists():
                 compressed_path.unlink()
 
-            # Move original file to archive directory as fallback
-            fallback_path = Path(self.config.archive_directory) / file_path.name
+            # Move original file to annex daily directory as fallback
+            fallback_path = Path(self.config.annex_daily_directory) / file_path.name
             shutil.move(str(file_path), str(fallback_path))
             logger.info(f"Moved file to fallback location: {fallback_path}")
 
@@ -343,7 +349,7 @@ class ArchiverService:
     def _add_to_git_annex(self, filename: str, gcs_url: str) -> None:
         """Add file URL to git-annex (blocking operation)."""
         try:
-            annex_dir = Path(self.config.git_annex_directory)
+            annex_dir = Path(self.config.annex_directory)
 
             # Change to annex directory
             original_cwd = Path.cwd()
@@ -351,18 +357,19 @@ class ArchiverService:
             os.chdir(annex_dir)
 
             try:
-                # Add URL to git-annex
+                # Add URL to git-annex with file path relative to annex directory
+                annex_file_path = f"daily/{filename}"
                 result = subprocess.run(
-                    ["git", "annex", "addurl", gcs_url, "--file", filename],
+                    ["git", "annex", "addurl", gcs_url, "--file", annex_file_path],
                     capture_output=True,
                     text=True,
                     check=True
                 )
-                logger.info(f"Added {filename} to git-annex with URL {gcs_url}")
+                logger.info(f"Added {annex_file_path} to git-annex with URL {gcs_url}")
 
                 # Commit the change
                 subprocess.run(
-                    ["git", "add", filename],
+                    ["git", "add", annex_file_path],
                     capture_output=True,
                     text=True,
                     check=True

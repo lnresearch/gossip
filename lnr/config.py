@@ -1,16 +1,23 @@
-from pydantic import Field
+from pathlib import Path
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings
 
 
 class Config(BaseSettings):
     """Configuration for the Lightning Network gossip processing pipeline."""
-    
+
+    # Data directory configuration
+    data_dir: str = Field(
+        default="/data",
+        description="Base directory for all data storage"
+    )
+
     # RabbitMQ configuration
     rabbitmq_url: str = Field(
         default="amqp://guest:guest@localhost:35672/",
         description="RabbitMQ connection URL"
     )
-    
+
     # Upstream RabbitMQ for glbridge
     upstream_rabbitmq_url: str = Field(
         default="amqp://guest:guest@upstream:5672/",
@@ -20,22 +27,8 @@ class Config(BaseSettings):
         default="router.gossip",
         description="Upstream exchange name to subscribe to"
     )
-    
-    # Database configuration
-    database_path: str = Field(
-        default="gossip.db",
-        description="SQLite database path for message deduplication"
-    )
-    
+
     # Archive configuration
-    archive_temp_directory: str = Field(
-        default="/data/temp",
-        description="Temporary directory for active archive files"
-    )
-    archive_directory: str = Field(
-        default="annex/dailies",
-        description="Directory for archiving gossip snapshots"
-    )
     archive_rotation: str = Field(
         default="hourly",
         description="Archive rotation: 'hourly' or 'daily'"
@@ -48,10 +41,6 @@ class Config(BaseSettings):
     )
 
     # Git annex configuration
-    git_annex_directory: str = Field(
-        default="/data/annex/daily",
-        description="Git annex directory for storing file references"
-    )
     github_remote: str = Field(
         default="origin",
         description="GitHub remote name for pushing annex commits"
@@ -64,6 +53,31 @@ class Config(BaseSettings):
         default="",
         description="Path to SSH known_hosts file (empty = use default)"
     )
+
+    # Computed paths based on data_dir
+    @computed_field
+    @property
+    def database_path(self) -> str:
+        """SQLite database path for message deduplication: {data_dir}/db/gossip.db"""
+        return str(Path(self.data_dir) / "db" / "gossip.db")
+
+    @computed_field
+    @property
+    def temp_directory(self) -> str:
+        """Temporary directory for active archive files: {data_dir}/temp"""
+        return str(Path(self.data_dir) / "temp")
+
+    @computed_field
+    @property
+    def annex_directory(self) -> str:
+        """Git annex base directory: {data_dir}/annex"""
+        return str(Path(self.data_dir) / "annex")
+
+    @computed_field
+    @property
+    def annex_daily_directory(self) -> str:
+        """Git annex daily snapshots directory: {data_dir}/annex/daily"""
+        return str(Path(self.data_dir) / "annex" / "daily")
 
     # Syncer configuration
     sync_interval_hours: int = Field(

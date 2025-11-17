@@ -19,7 +19,7 @@ class UploaderService:
         self.config = config
         self.dry_run = dry_run
         # Convert to absolute path to avoid issues with relative paths
-        self.annex_dir = Path(config.git_annex_directory).resolve()
+        self.annex_dir = Path(config.annex_directory).resolve()
         self._setup_ssh_env()
 
     def _setup_ssh_env(self) -> None:

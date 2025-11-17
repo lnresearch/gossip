@@ -29,7 +29,7 @@ async def test_local_rabbitmq():
         # Raw exchange (where glbridge publishes)
         raw_exchange = await channel.declare_exchange(
             "lnr.gossip.raw",
-            ExchangeType.DIRECT,
+            ExchangeType.FANOUT,  # Fixed: consistent with glbridge service
             durable=True
         )
         logger.info("✅ Declared lnr.gossip.raw exchange")

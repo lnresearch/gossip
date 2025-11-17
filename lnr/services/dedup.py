@@ -95,12 +95,18 @@ class DedupService:
                         headers=message.headers or {},
                         timestamp=message.timestamp,
                     )
-                    
+
                     await self.uniq_exchange.publish(uniq_message, routing_key="")
                     await status_manager.increment_message_count("dedup")
                     logger.debug(f"Forwarded unique message of {len(processed_data)} bytes")
                 else:
                     logger.debug(f"Dropped duplicate message of {len(processed_data)} bytes")
+
+                # Check if we were in error state and reset to running
+                service_info = await status_manager.get_service_info("dedup")
+                if service_info and service_info.status == ServiceStatus.ERROR:
+                    logger.info("Service recovered from error state, resetting to RUNNING")
+                    await status_manager.update_service_status("dedup", ServiceStatus.RUNNING)
                 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")

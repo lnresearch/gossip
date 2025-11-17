@@ -22,16 +22,42 @@ pip install -e .
 
 ## Configuration
 
-Environment variables:
+### Directory Structure
+
+The application uses a base `data_dir` configuration from which all data storage paths are derived:
+
+```
+{data_dir}/
+├── annex/           # Git annex repository
+│   └── daily/       # Completed daily snapshot files (.gsp.bz2)
+├── temp/            # Files currently being written by archiver
+└── db/              # SQLite database files
+    └── gossip.db    # Deduplication database
+```
+
+### Environment Variables
+
+- `DATA_DIR`: Base directory for all data storage (default: `/data`)
 - `RABBITMQ_URL`: Local RabbitMQ URL (default: `amqp://guest:guest@localhost:5672/`)
 - `UPSTREAM_RABBITMQ_URL`: Upstream RabbitMQ URL for glbridge
-- `UPSTREAM_QUEUE_NAME`: Upstream queue name (default: `gossip.raw`)
-- `DATABASE_PATH`: SQLite database path (default: `gossip.db`)
-- `ARCHIVE_DIRECTORY`: Archive directory (default: `annex/dailies`)
-- `ARCHIVE_ROTATION`: Archive rotation `hourly` or `daily` (default: `daily`)
+- `UPSTREAM_QUEUE_NAME`: Upstream exchange name (default: `router.gossip`)
+- `ARCHIVE_ROTATION`: Archive rotation `hourly` or `daily` (default: `hourly`)
+- `GCS_BUCKET_URL`: GCS bucket URL for uploading archive files
+- `GITHUB_REMOTE`: GitHub remote name for pushing annex commits (default: `origin`)
+- `GIT_SSH_KEY_PATH`: Path to SSH private key for git operations
+- `GIT_SSH_KNOWN_HOSTS_PATH`: Path to SSH known_hosts file
+- `SYNC_INTERVAL_HOURS`: Interval in hours for syncer operations (default: `1`)
 - `WEB_HOST`: Web server host (default: `0.0.0.0`)
-- `WEB_PORT`: Web server port (default: `8000`)
+- `WEB_PORT`: Web server port (default: `8008`)
 - `LOG_LEVEL`: Log level (default: `INFO`)
+
+### Derived Paths
+
+The following paths are automatically computed from `DATA_DIR`:
+- **Database path**: `{data_dir}/db/gossip.db`
+- **Temp directory**: `{data_dir}/temp`
+- **Annex directory**: `{data_dir}/annex`
+- **Annex daily directory**: `{data_dir}/annex/daily`
 
 ## Usage
 

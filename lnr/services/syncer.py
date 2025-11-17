@@ -20,7 +20,7 @@ class SyncerService:
         self.annex_stats: Dict[str, Any] = {}
 
         # Ensure git-annex directory exists
-        Path(config.git_annex_directory).mkdir(parents=True, exist_ok=True)
+        Path(config.annex_directory).mkdir(parents=True, exist_ok=True)
 
     async def start(self) -> None:
         """Start the syncer service."""
@@ -49,7 +49,7 @@ class SyncerService:
 
     async def _ensure_git_annex_init(self) -> None:
         """Ensure git-annex repository is initialized."""
-        annex_dir = Path(self.config.git_annex_directory)
+        annex_dir = Path(self.config.annex_directory)
         git_dir = annex_dir / ".git"
 
         if not git_dir.exists():
@@ -67,7 +67,7 @@ class SyncerService:
     def _init_git_repo(self) -> None:
         """Initialize git repository (blocking operation)."""
         try:
-            annex_dir = Path(self.config.git_annex_directory)
+            annex_dir = Path(self.config.annex_directory)
             original_cwd = Path.cwd()
             import os
             os.chdir(annex_dir)
@@ -111,7 +111,7 @@ class SyncerService:
     def _init_git_annex(self) -> None:
         """Initialize git-annex (blocking operation)."""
         try:
-            annex_dir = Path(self.config.git_annex_directory)
+            annex_dir = Path(self.config.annex_directory)
             original_cwd = Path.cwd()
             import os
             os.chdir(annex_dir)
@@ -145,6 +145,12 @@ class SyncerService:
             self.last_sync_time = datetime.now(timezone.utc)
             logger.info("Git-annex sync completed successfully")
 
+            # Check if we were in error state and reset to running
+            service_info = await status_manager.get_service_info("syncer")
+            if service_info and service_info.status == ServiceStatus.ERROR:
+                logger.info("Sync succeeded, service recovered from error state")
+                await status_manager.update_service_status("syncer", ServiceStatus.RUNNING)
+
         except Exception as e:
             logger.error(f"Git-annex sync failed: {e}")
             await status_manager.update_service_status(
@@ -156,7 +162,7 @@ class SyncerService:
     def _run_git_annex_sync(self) -> None:
         """Run git-annex sync (blocking operation)."""
         try:
-            annex_dir = Path(self.config.git_annex_directory)
+            annex_dir = Path(self.config.annex_directory)
             original_cwd = Path.cwd()
             import os
             os.chdir(annex_dir)
@@ -203,13 +209,19 @@ class SyncerService:
 
             await status_manager.increment_message_count("syncer")
 
+            # Check if we were in error state and reset to running
+            service_info = await status_manager.get_service_info("syncer")
+            if service_info and service_info.status == ServiceStatus.ERROR:
+                logger.info("Stats updated successfully, service recovered from error state")
+                await status_manager.update_service_status("syncer", ServiceStatus.RUNNING)
+
         except Exception as e:
             logger.error(f"Failed to update annex stats: {e}")
 
     def _get_annex_stats(self) -> Dict[str, Any]:
         """Get git-annex statistics (blocking operation)."""
         try:
-            annex_dir = Path(self.config.git_annex_directory)
+            annex_dir = Path(self.config.annex_directory)
             original_cwd = Path.cwd()
             import os
             os.chdir(annex_dir)
