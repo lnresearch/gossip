@@ -13,12 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, BinaryIO
 
-from faststream import context
+from faststream import context, Depends
 from faststream.rabbit import RabbitMessage
 
 from lnr.config import Config
 from lnr.gsp import GSPWriter, GSP_HEADER, encode_compact_size
 from lnr.status import status_manager, ServiceStatus
+from lnr.stats import StatsCounter, stats_counter
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ class ArchiverState:
         # Track current archive statistics
         self.current_archive_message_count = 0
         self.current_archive_byte_count = 0
+
+        # Mutex to protect file access and rotation
+        self.file_lock = asyncio.Lock()
 
         # Ensure directories exist
         Path(config.temp_directory).mkdir(parents=True, exist_ok=True)
@@ -88,7 +92,7 @@ class ArchiverState:
             logger.info(f"Closed archive file: {old_file_path}")
 
             if old_file_path and old_file_path.exists():
-                await self._upload_and_annex_file(old_file_path)
+                await self._move_to_annex(old_file_path)
 
         # Generate new filename
         if self.config.archive_rotation == "hourly":
@@ -125,57 +129,39 @@ class ArchiverState:
 
     async def write_message(self, message_data: bytes) -> None:
         """Write a message to the archive file."""
-        await self._rotate_file_if_needed()
+        async with self.file_lock:
+            await self._rotate_file_if_needed()
 
-        if self.gsp_writer:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._write_gsp_message, message_data)
+            if self.gsp_writer:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._write_gsp_message, message_data)
 
-            message_size = len(message_data)
-            compact_size_bytes = len(encode_compact_size(message_size))
-            total_bytes = compact_size_bytes + message_size
+                message_size = len(message_data)
+                compact_size_bytes = len(encode_compact_size(message_size))
+                total_bytes = compact_size_bytes + message_size
 
-            self.current_archive_message_count += 1
-            self.current_archive_byte_count += total_bytes
+                self.current_archive_message_count += 1
+                self.current_archive_byte_count += total_bytes
 
-            await status_manager.increment_message_count("archiver")
-            await status_manager.update_archiver_stats(
-                self.current_archive_message_count, self.current_archive_byte_count
-            )
+                await status_manager.increment_message_count("archiver")
+                await status_manager.update_archiver_stats(
+                    self.current_archive_message_count, self.current_archive_byte_count
+                )
 
-            logger.debug(f"Archived message of {len(message_data)} bytes")
+                logger.debug(f"Archived message of {len(message_data)} bytes")
 
-    async def _upload_and_annex_file(self, file_path: Path) -> None:
-        """Compress, upload file to GCS and add to git-annex."""
-        compressed_path = None
+    async def _move_to_annex(self, file_path: Path) -> None:
+        """Move rotated file to annex directory for independent upload processing."""
         try:
             loop = asyncio.get_event_loop()
-            compressed_path = await loop.run_in_executor(None, self._compress_file, file_path)
+            annex_path = Path(self.config.annex_daily_directory) / file_path.name
 
-            compressed_filename = compressed_path.name
-            gcs_url = f"{self.config.gcs_bucket_url.rstrip('/')}/{compressed_filename}"
-
-            logger.info(f"Uploading compressed file {compressed_path} to GCS: {gcs_url}")
-
-            await loop.run_in_executor(
-                None, self._upload_to_gcs, str(compressed_path), compressed_filename
-            )
-
-            await loop.run_in_executor(None, self._add_to_git_annex, compressed_filename, gcs_url)
-
-            file_path.unlink()
-            compressed_path.unlink()
-            logger.info(f"Removed temporary files: {file_path}, {compressed_path}")
+            await loop.run_in_executor(None, shutil.move, str(file_path), str(annex_path))
+            logger.info(f"Moved archive file to annex: {annex_path}")
 
         except Exception as e:
-            logger.error(f"Failed to upload and annex file {file_path}: {e}")
-
-            if compressed_path and compressed_path.exists():
-                compressed_path.unlink()
-
-            fallback_path = Path(self.config.annex_daily_directory) / file_path.name
-            shutil.move(str(file_path), str(fallback_path))
-            logger.info(f"Moved file to fallback location: {fallback_path}")
+            logger.error(f"Failed to move file to annex {file_path}: {e}")
+            raise
 
     def _compress_file(self, file_path: Path) -> Path:
         """Compress file with bzip2 (blocking operation)."""
@@ -257,12 +243,27 @@ class ArchiverState:
 
 
 async def process_archive_message(
-    message: RabbitMessage,
+    message: bytes,
     state: ArchiverState = context.Context(),
 ) -> None:
-    """Process a unique message and write to archive file."""
+    """Process a unique message and write to archive file.
+
+    Args:
+        message: Incoming message from uniq exchange
+        state: Archiver state (injected via Context)
+    """
     try:
-        await state.write_message(message.body)
+        # Track incoming message
+        stats_counter.increment("archiver.incoming")
+        stats_counter.increment("archiver.bytes_written", len(message))
+
+        await state.write_message(message)
+
+        # Track current file stats
+        stats_counter.set("archiver.current_file_messages", state.current_archive_message_count)
+        stats_counter.set("archiver.current_file_bytes", state.current_archive_byte_count)
+        if state.current_file_path:
+            stats_counter.set("archiver.current_file", str(state.current_file_path.name))
 
         # Check if we were in error state and reset to running
         service_info = await status_manager.get_service_info("archiver")
@@ -272,6 +273,7 @@ async def process_archive_message(
 
     except Exception as e:
         logger.error(f"Error processing message: {e}")
+        stats_counter.increment("archiver.errors")
         await status_manager.update_service_status(
             "archiver", ServiceStatus.ERROR, f"Error processing message: {e}"
         )

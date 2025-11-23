@@ -9,12 +9,13 @@ import logging
 from typing import Optional
 
 import aiosqlite
-from faststream import context
+from faststream import context, Depends
 from faststream.rabbit import RabbitMessage
 
 from lnr.config import Config
 from lnr.models import create_database
 from lnr.status import status_manager, ServiceStatus
+from lnr.stats import StatsCounter, stats_counter
 
 logger = logging.getLogger(__name__)
 
@@ -113,27 +114,57 @@ class DedupState:
         except aiosqlite.IntegrityError:
             return False
 
+    async def get_db_message_count(self) -> int:
+        """Get the total number of messages in the dedup database."""
+        cursor = await self.db.execute("SELECT COUNT(*) FROM messages")
+        result = await cursor.fetchone()
+        return result[0] if result else 0
+
 
 async def process_dedup_message(
-    message: RabbitMessage,
+    message: bytes,
     state: DedupState = context.Context(),
 ) -> Optional[bytes]:
     """Process a raw message and check for duplicates.
 
+    Args:
+        message: Incoming message from raw exchange
+        state: Dedup state (injected via Context)
+
     Returns the processed message if unique, None if duplicate.
     """
     try:
-        raw_data = message.body
+        from datetime import datetime, timezone
+
+        raw_data = message
+
+        # Track incoming message
+        stats_counter.increment("dedup.incoming")
+        stats_counter.set("dedup.last_processed_time", datetime.now(timezone.utc).isoformat())
 
         if not state._is_valid_gossip_message(raw_data):
             logger.debug(f"Ignoring non-gossip message of length {len(raw_data)}")
+            stats_counter.increment("dedup.invalid")
             return None
 
         processed_data = state._strip_protobuf_envelope(raw_data)
 
+        # Track if protobuf was stripped
+        if len(processed_data) != len(raw_data):
+            stats_counter.increment("dedup.protobuf_stripped")
+
         if await state.is_unique_message(processed_data):
             await status_manager.increment_message_count("dedup")
             logger.debug(f"Forwarded unique message of {len(processed_data)} bytes")
+
+            # Track unique message
+            stats_counter.increment("dedup.unique")
+            stats_counter.increment("dedup.outgoing")
+
+            # Update DB size periodically (every 100 unique messages)
+            if stats_counter.get("dedup.unique", 0) % 100 == 0:
+                db_size = await state.get_db_message_count()
+                stats_counter.set("dedup.db_size", db_size)
 
             # Check if we were in error state and reset to running
             service_info = await status_manager.get_service_info("dedup")
@@ -144,10 +175,12 @@ async def process_dedup_message(
             return processed_data
         else:
             logger.debug(f"Dropped duplicate message of {len(processed_data)} bytes")
+            stats_counter.increment("dedup.duplicates")
             return None
 
     except Exception as e:
         logger.error(f"Error processing message: {e}")
+        stats_counter.increment("dedup.errors")
         await status_manager.update_service_status(
             "dedup", ServiceStatus.ERROR, f"Error processing message: {e}"
         )

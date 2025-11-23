@@ -11,7 +11,7 @@ from faststream.rabbit import RabbitBroker, RabbitExchange, ExchangeType, Rabbit
 from rich.console import Console
 from rich.logging import RichHandler
 
-from .broker import (
+from lnr.broker import (
     create_broker,
     create_upstream_broker,
     raw_exchange,
@@ -19,12 +19,14 @@ from .broker import (
     dedup_queue,
     archiver_queue,
 )
-from .config import Config
-from .handlers.bridge import process_bridge_message
-from .handlers.dedup import DedupState, process_dedup_message
-from .handlers.archiver import ArchiverState, process_archive_message
-from .status import status_manager, ServiceStatus
-from .web import app as web_app
+from lnr.config import Config
+from lnr.handlers.bridge import process_bridge_message
+from lnr.handlers.dedup import DedupState, process_dedup_message
+from lnr.handlers.archiver import ArchiverState, process_archive_message
+from lnr.handlers.uploader import UploaderState
+from lnr.status import status_manager, ServiceStatus
+from lnr.stats import stats_counter
+from lnr.web import app as web_app
 
 console = Console()
 
@@ -51,12 +53,13 @@ upstream_broker = create_upstream_broker(config)
 # Create state objects
 dedup_state = DedupState(config)
 archiver_state = ArchiverState(config)
+uploader_state = UploaderState(config)
 
 # Define upstream exchange for bridge
+# Note: In FastStream, we just declare the exchange - it will connect to existing
 upstream_exchange = RabbitExchange(
     name=config.upstream_queue_name,  # e.g., "router.gossip"
     type=ExchangeType.FANOUT,
-    passive=True,  # Don't create, just connect to existing
 )
 
 # Create upstream queue for bridge (temporary, exclusive)
@@ -69,35 +72,40 @@ upstream_queue = RabbitQueue(
 
 # Wire up handlers with decorators
 @upstream_broker.subscriber(queue=upstream_queue, exchange=upstream_exchange)
-@broker.publisher(exchange=raw_exchange)
 async def bridge_handler(msg: bytes = context.Context("message.body")):
     """Bridge handler: upstream -> local raw exchange."""
-    from faststream.rabbit import RabbitMessage
-
-    # Create a RabbitMessage wrapper for the handler
-    message = RabbitMessage(body=msg)
-    result = await process_bridge_message(message)
-    return result  # FastStream will publish if not None
+    try:
+        result = await process_bridge_message(msg)
+        if result is not None:
+            # Manually publish to local broker's raw exchange
+            await broker.publish(result, exchange=raw_exchange)
+            # Only increment outgoing after successful publish
+            stats_counter.increment("bridge.published")
+            logger.debug(f"Bridge published message to raw exchange")
+    except Exception as e:
+        logger.error(f"Bridge handler error: {e}", exc_info=True)
+        stats_counter.increment("bridge.publish_errors")
 
 
 @broker.subscriber(queue=dedup_queue, exchange=raw_exchange)
-@broker.publisher(exchange=uniq_exchange)
 async def dedup_handler(msg: bytes = context.Context("message.body")):
     """Dedup handler: raw exchange -> uniq exchange."""
-    from faststream.rabbit import RabbitMessage
-
-    message = RabbitMessage(body=msg)
-    result = await process_dedup_message(message, dedup_state)
-    return result  # FastStream will publish if not None
+    try:
+        result = await process_dedup_message(msg, dedup_state)
+        # Only publish if result is not None (i.e., message is unique)
+        if result is not None:
+            await broker.publish(result, exchange=uniq_exchange)
+    except Exception as e:
+        logger.error(f"Dedup handler error: {e}", exc_info=True)
 
 
 @broker.subscriber(queue=archiver_queue, exchange=uniq_exchange)
 async def archiver_handler(msg: bytes = context.Context("message.body")):
     """Archiver handler: uniq exchange -> file."""
-    from faststream.rabbit import RabbitMessage
-
-    message = RabbitMessage(body=msg)
-    await process_archive_message(message, archiver_state)
+    try:
+        await process_archive_message(msg, archiver_state)
+    except Exception as e:
+        logger.error(f"Archiver handler error: {e}", exc_info=True)
 
 
 @asynccontextmanager
@@ -109,10 +117,12 @@ async def lifespan(app: FastAPI):
     await status_manager.update_service_status("glbridge", ServiceStatus.STARTING)
     await status_manager.update_service_status("dedup", ServiceStatus.STARTING)
     await status_manager.update_service_status("archiver", ServiceStatus.STARTING)
+    await status_manager.update_service_status("uploader", ServiceStatus.STARTING)
 
     # Start state objects
     await dedup_state.start()
     await archiver_state.start()
+    await uploader_state.start()
 
     # Start brokers
     await broker.start()
@@ -122,6 +132,7 @@ async def lifespan(app: FastAPI):
     await status_manager.update_service_status("glbridge", ServiceStatus.RUNNING)
     await status_manager.update_service_status("dedup", ServiceStatus.RUNNING)
     await status_manager.update_service_status("archiver", ServiceStatus.RUNNING)
+    await status_manager.update_service_status("uploader", ServiceStatus.RUNNING)
 
     logger.info("All services started successfully")
 
@@ -131,17 +142,19 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down services")
 
     # Stop brokers
-    await upstream_broker.close()
-    await broker.close()
+    await upstream_broker.stop()
+    await broker.stop()
 
     # Stop state objects
     await dedup_state.stop()
     await archiver_state.stop()
+    await uploader_state.stop()
 
     # Update status
     await status_manager.update_service_status("glbridge", ServiceStatus.STOPPED)
     await status_manager.update_service_status("dedup", ServiceStatus.STOPPED)
     await status_manager.update_service_status("archiver", ServiceStatus.STOPPED)
+    await status_manager.update_service_status("uploader", ServiceStatus.STOPPED)
 
     logger.info("All services stopped")
 
@@ -158,10 +171,12 @@ async def run_services_only():
     await status_manager.update_service_status("glbridge", ServiceStatus.STARTING)
     await status_manager.update_service_status("dedup", ServiceStatus.STARTING)
     await status_manager.update_service_status("archiver", ServiceStatus.STARTING)
+    await status_manager.update_service_status("uploader", ServiceStatus.STARTING)
 
     # Start state objects
     await dedup_state.start()
     await archiver_state.start()
+    await uploader_state.start()
 
     # Start brokers
     await broker.start()
@@ -171,6 +186,7 @@ async def run_services_only():
     await status_manager.update_service_status("glbridge", ServiceStatus.RUNNING)
     await status_manager.update_service_status("dedup", ServiceStatus.RUNNING)
     await status_manager.update_service_status("archiver", ServiceStatus.RUNNING)
+    await status_manager.update_service_status("uploader", ServiceStatus.RUNNING)
 
     logger.info("All services started successfully")
 
@@ -185,17 +201,19 @@ async def run_services_only():
         logger.info("Shutting down services")
 
         # Stop brokers
-        await upstream_broker.close()
-        await broker.close()
+        await upstream_broker.stop()
+        await broker.stop()
 
         # Stop state objects
         await dedup_state.stop()
         await archiver_state.stop()
+        await uploader_state.stop()
 
         # Update status
         await status_manager.update_service_status("glbridge", ServiceStatus.STOPPED)
         await status_manager.update_service_status("dedup", ServiceStatus.STOPPED)
         await status_manager.update_service_status("archiver", ServiceStatus.STOPPED)
+        await status_manager.update_service_status("uploader", ServiceStatus.STOPPED)
 
         logger.info("All services stopped")
 

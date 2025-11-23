@@ -12,7 +12,7 @@
             background-color: #f5f5f5;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
         .header {
@@ -24,7 +24,7 @@
         }
         .services-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
         }
         .service-card {
@@ -76,18 +76,42 @@
             background-color: #FFEBEE;
             color: #C62828;
         }
-        .service-details {
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
             margin-top: 15px;
-            font-size: 0.875rem;
-            color: #666;
         }
-        .service-details div {
-            margin-bottom: 5px;
+        .stat-badge {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 3px solid #2196F3;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: #333;
+        }
+        .stat-subvalue {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 2px;
         }
         .error-message {
             color: #D32F2F;
             font-weight: 500;
             margin-top: 10px;
+            padding: 8px;
+            background: #FFEBEE;
+            border-radius: 4px;
         }
         .refresh-btn {
             background: #2196F3;
@@ -101,6 +125,11 @@
         .refresh-btn:hover {
             background: #1976D2;
         }
+        .last-update {
+            font-size: 0.875rem;
+            color: #666;
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
@@ -110,38 +139,218 @@
             <p>Lightning Network gossip message processing pipeline status</p>
             <button class="refresh-btn" onclick="location.reload()">Refresh Status</button>
         </div>
-        
-        <div class="services-grid">
-            {% for name, service in services.items() %}
-            <div class="service-card {{ service.status.value }}">
-                <div class="service-name">{{ service.name }}</div>
-                <span class="service-status status-{{ service.status.value }}">
-                    {{ service.status.value }}
-                </span>
-                
-                <div class="service-details">
-                    <div><strong>Last Update:</strong> {{ service.last_update.strftime('%Y-%m-%d %H:%M:%S') }}</div>
-                    <div><strong>Messages Processed:</strong> {{ service.message_count }}</div>
-                    {% if service.last_message_time %}
-                    <div><strong>Last Message:</strong> {{ service.last_message_time.strftime('%Y-%m-%d %H:%M:%S') }}</div>
-                    {% endif %}
-                </div>
-                
-                {% if service.error_message %}
-                <div class="error-message">
-                    <strong>Error:</strong> {{ service.error_message }}
-                </div>
-                {% endif %}
-            </div>
-            {% endfor %}
+
+        <div class="services-grid" id="services-grid">
+            <!-- Services will be populated by JavaScript -->
         </div>
     </div>
-    
+
     <script>
+        async function loadStats() {
+            try {
+                const [statusResponse, statsResponse] = await Promise.all([
+                    fetch('/api/status'),
+                    fetch('/api/stats/formatted')
+                ]);
+
+                const statusData = await statusResponse.json();
+                const statsData = await statsResponse.json();
+
+                updateDashboard(statusData, statsData);
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        function updateDashboard(statusData, statsData) {
+            const grid = document.getElementById('services-grid');
+            grid.innerHTML = '';
+
+            // Bridge card
+            if (statusData.glbridge) {
+                const bridge = statusData.glbridge;
+                const bridgeStats = statsData.bridge || {};
+
+                grid.innerHTML += `
+                    <div class="service-card ${bridge.status}">
+                        <div class="service-name">Bridge (glbridge)</div>
+                        <span class="service-status status-${bridge.status}">${bridge.status}</span>
+
+                        <div class="stats-grid">
+                            <div class="stat-badge">
+                                <div class="stat-label">Received</div>
+                                <div class="stat-value">${bridgeStats.incoming || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Published</div>
+                                <div class="stat-value">${bridgeStats.published || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Invalid</div>
+                                <div class="stat-value">${bridgeStats.invalid || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Pub Errors</div>
+                                <div class="stat-value">${bridgeStats.publish_errors || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Last Message</div>
+                                <div class="stat-value">${bridgeStats.last_processed || 'Never'}</div>
+                            </div>
+                        </div>
+
+                        ${bridge.error_message ? `<div class="error-message">${bridge.error_message}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Dedup card
+            if (statusData.dedup) {
+                const dedup = statusData.dedup;
+                const dedupStats = statsData.dedup || {};
+
+                grid.innerHTML += `
+                    <div class="service-card ${dedup.status}">
+                        <div class="service-name">Deduplicator (dedup)</div>
+                        <span class="service-status status-${dedup.status}">${dedup.status}</span>
+
+                        <div class="stats-grid">
+                            <div class="stat-badge">
+                                <div class="stat-label">Total Received</div>
+                                <div class="stat-value">${dedupStats.incoming || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Unique Sent</div>
+                                <div class="stat-value">${dedupStats.outgoing || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">DB Size</div>
+                                <div class="stat-value">${(dedupStats.db_size || 0).toLocaleString()}</div>
+                                <div class="stat-subvalue">messages</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Duplicates</div>
+                                <div class="stat-value">${dedupStats.duplicates || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Last Message</div>
+                                <div class="stat-value">${dedupStats.last_processed || 'Never'}</div>
+                            </div>
+                        </div>
+
+                        ${dedup.error_message ? `<div class="error-message">${dedup.error_message}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Archiver card
+            if (statusData.archiver) {
+                const archiver = statusData.archiver;
+                const archiverStats = statsData.archiver || {};
+
+                grid.innerHTML += `
+                    <div class="service-card ${archiver.status}">
+                        <div class="service-name">Archiver</div>
+                        <span class="service-status status-${archiver.status}">${archiver.status}</span>
+
+                        <div class="stats-grid">
+                            <div class="stat-badge">
+                                <div class="stat-label">Messages</div>
+                                <div class="stat-value">${archiverStats.current_file_messages || 0}</div>
+                                <div class="stat-subvalue">in current file</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">File Size</div>
+                                <div class="stat-value">${archiverStats.current_file_bytes_human || '0 B'}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Since Rotation</div>
+                                <div class="stat-value">${archiverStats.time_since_rotation || '0s'}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Current File</div>
+                                <div class="stat-value" style="font-size: 0.75rem;">${archiverStats.current_file || 'N/A'}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Last Message</div>
+                                <div class="stat-value">${archiverStats.last_processed || 'Never'}</div>
+                            </div>
+                        </div>
+
+                        ${archiver.error_message ? `<div class="error-message">${archiver.error_message}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Uploader card (if exists)
+            if (statusData.uploader) {
+                const uploader = statusData.uploader;
+                const uploaderStats = statsData.uploader || {};
+
+                grid.innerHTML += `
+                    <div class="service-card ${uploader.status}">
+                        <div class="service-name">Uploader</div>
+                        <span class="service-status status-${uploader.status}">${uploader.status}</span>
+
+                        <div class="stats-grid">
+                            <div class="stat-badge">
+                                <div class="stat-label">Pending Files</div>
+                                <div class="stat-value">${uploaderStats.pending_files || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Uploaded</div>
+                                <div class="stat-value">${uploaderStats.files_uploaded || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Failures</div>
+                                <div class="stat-value">${uploaderStats.upload_failures || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Errors</div>
+                                <div class="stat-value">${uploaderStats.errors || 0}</div>
+                            </div>
+                        </div>
+
+                        ${uploader.error_message ? `<div class="error-message">${uploader.error_message}</div>` : ''}
+                    </div>
+                `;
+            }
+
+            // Syncer card (if exists)
+            if (statusData.syncer) {
+                const syncer = statusData.syncer;
+
+                grid.innerHTML += `
+                    <div class="service-card ${syncer.status}">
+                        <div class="service-name">Syncer</div>
+                        <span class="service-status status-${syncer.status}">${syncer.status}</span>
+
+                        <div class="stats-grid">
+                            <div class="stat-badge">
+                                <div class="stat-label">Total Files</div>
+                                <div class="stat-value">${syncer.annex_total_files || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Local Files</div>
+                                <div class="stat-value">${syncer.annex_local_files || 0}</div>
+                            </div>
+                            <div class="stat-badge">
+                                <div class="stat-label">Remote Files</div>
+                                <div class="stat-value">${syncer.annex_remote_files || 0}</div>
+                            </div>
+                        </div>
+
+                        ${syncer.error_message ? `<div class="error-message">${syncer.error_message}</div>` : ''}
+                    </div>
+                `;
+            }
+        }
+
+        // Initial load
+        loadStats();
+
         // Auto-refresh every 5 seconds
-        setTimeout(() => {
-            location.reload();
-        }, 5000);
+        setInterval(loadStats, 5000);
     </script>
 </body>
 </html>

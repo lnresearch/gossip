@@ -7,11 +7,12 @@ It subscribes to the upstream exchange and publishes to the local raw exchange.
 import logging
 from typing import Optional
 
-from faststream import context
+from faststream import context, Depends
 from faststream.rabbit import RabbitMessage
 
 from lnr.config import Config
 from lnr.status import status_manager, ServiceStatus
+from lnr.stats import StatsCounter, stats_counter
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,30 @@ def _is_valid_gossip_message(data: bytes) -> bool:
     return True
 
 
-async def process_bridge_message(message: RabbitMessage) -> Optional[bytes]:
+async def process_bridge_message(
+    message: bytes,
+) -> Optional[bytes]:
     """Process a message from upstream and forward to local exchange.
+
+    Args:
+        message: Message body from upstream
 
     Returns the message body if valid, None if should be filtered.
     """
     try:
-        if not _is_valid_gossip_message(message.body):
-            logger.debug(f"Ignoring non-gossip message of length {len(message.body)}")
+        from datetime import datetime, timezone
+
+        # Track incoming message
+        stats_counter.increment("bridge.incoming")
+        stats_counter.set("bridge.last_processed_time", datetime.now(timezone.utc).isoformat())
+
+        if not _is_valid_gossip_message(message):
+            logger.debug(f"Ignoring non-gossip message of length {len(message)}")
+            stats_counter.increment("bridge.invalid")
             return None
+
+        # Track message size
+        stats_counter.increment("bridge.bytes_received", len(message))
 
         # Check if we were in error state and reset to running
         service_info = await status_manager.get_service_info("glbridge")
@@ -52,12 +68,16 @@ async def process_bridge_message(message: RabbitMessage) -> Optional[bytes]:
             await status_manager.update_service_status("glbridge", ServiceStatus.RUNNING)
 
         await status_manager.increment_message_count("glbridge")
-        logger.debug(f"Forwarded gossip message of {len(message.body)} bytes")
+        logger.debug(f"Validated gossip message of {len(message)} bytes")
 
-        return message.body
+        # Note: bridge.published is incremented in main.py after successful publish
+        # Don't increment bridge.outgoing here as publish might fail
+
+        return message
 
     except Exception as e:
         logger.error(f"Error processing message: {e}")
+        stats_counter.increment("bridge.errors")
         await status_manager.update_service_status(
             "glbridge", ServiceStatus.ERROR, f"Error processing message: {e}"
         )

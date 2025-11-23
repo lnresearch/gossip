@@ -84,6 +84,12 @@ class Config(BaseSettings):
         default=1,
         description="Interval in hours for syncer operations"
     )
+
+    # Uploader configuration
+    upload_interval_seconds: int = Field(
+        default=60,
+        description="Interval in seconds for uploader to scan for unannexed files"
+    )
     
     # Web server configuration
     web_host: str = Field(

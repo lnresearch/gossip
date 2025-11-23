@@ -1,5 +1,7 @@
 # Temporary archive files
 annex-temp/
+data/annex
+data/temp
 
 # Python
 __pycache__/

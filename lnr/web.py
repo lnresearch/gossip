@@ -13,6 +13,7 @@ from .services.glbridge import GlbridgeService
 from .services.dedup import DedupService
 from .services.archiver import ArchiverService
 from .services.syncer import SyncerService
+from .stats import stats_counter
 
 # Global services
 services: Dict[str, object] = {}
@@ -233,3 +234,113 @@ async def get_service_status(service_name: str):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "services": len(await status_manager.get_all_services())}
+
+
+@app.get("/api/stats")
+async def get_all_stats():
+    """Get all statistics from all handlers.
+
+    Returns:
+        Dictionary of all statistics tracked by StatsCounter
+    """
+    return stats_counter.get_all()
+
+
+@app.get("/api/stats/formatted")
+async def get_formatted_stats():
+    """Get formatted statistics for display in the UI.
+
+    Returns:
+        Dictionary with formatted stats for each handler
+    """
+    from datetime import datetime, timezone
+
+    all_stats = stats_counter.get_all()
+
+    def format_last_processed(timestamp_str):
+        if not timestamp_str:
+            return "Never"
+        try:
+            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            delta = now - timestamp
+
+            if delta.total_seconds() < 60:
+                return f"{int(delta.total_seconds())}s ago"
+            elif delta.total_seconds() < 3600:
+                return f"{int(delta.total_seconds() / 60)}m ago"
+            elif delta.total_seconds() < 86400:
+                return f"{int(delta.total_seconds() / 3600)}h ago"
+            else:
+                return f"{int(delta.total_seconds() / 86400)}d ago"
+        except:
+            return "Unknown"
+
+    def format_duration(seconds):
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            secs = seconds % 60
+            return f"{minutes}m {secs}s"
+        else:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours}h {minutes}m"
+
+    # Bridge stats
+    bridge_stats = {
+        "incoming": all_stats.get("bridge.incoming", 0),
+        "published": all_stats.get("bridge.published", 0),
+        "invalid": all_stats.get("bridge.invalid", 0),
+        "errors": all_stats.get("bridge.errors", 0),
+        "publish_errors": all_stats.get("bridge.publish_errors", 0),
+        "last_processed": format_last_processed(all_stats.get("bridge.last_processed_time")),
+        "last_processed_raw": all_stats.get("bridge.last_processed_time"),
+    }
+
+    # Dedup stats
+    dedup_stats = {
+        "incoming": all_stats.get("dedup.incoming", 0),
+        "outgoing": all_stats.get("dedup.outgoing", 0),
+        "db_size": all_stats.get("dedup.db_size", 0),
+        "duplicates": all_stats.get("dedup.duplicates", 0),
+        "errors": all_stats.get("dedup.errors", 0),
+        "last_processed": format_last_processed(all_stats.get("dedup.last_processed_time")),
+        "last_processed_raw": all_stats.get("dedup.last_processed_time"),
+    }
+
+    # Archiver stats
+    seconds_since_rotation = all_stats.get("archiver.seconds_since_rotation", 0)
+    archiver_stats = {
+        "incoming": all_stats.get("archiver.incoming", 0),
+        "current_file_messages": all_stats.get("archiver.current_file_messages", 0),
+        "current_file_bytes": all_stats.get("archiver.current_file_bytes", 0),
+        "current_file_bytes_human": _format_bytes(all_stats.get("archiver.current_file_bytes", 0)),
+        "current_file": all_stats.get("archiver.current_file", "N/A"),
+        "seconds_since_rotation": seconds_since_rotation,
+        "time_since_rotation": format_duration(seconds_since_rotation),
+        "last_rotation": format_last_processed(all_stats.get("archiver.last_rotation_time")),
+        "last_processed": format_last_processed(all_stats.get("archiver.last_processed_time")),
+        "last_processed_raw": all_stats.get("archiver.last_processed_time"),
+        "errors": all_stats.get("archiver.errors", 0),
+    }
+
+    return {
+        "bridge": bridge_stats,
+        "dedup": dedup_stats,
+        "archiver": archiver_stats,
+    }
+
+
+@app.get("/api/stats/{handler}")
+async def get_handler_stats(handler: str):
+    """Get statistics for a specific handler.
+
+    Args:
+        handler: Handler name (e.g., "bridge", "dedup", "archiver")
+
+    Returns:
+        Dictionary of statistics for the specified handler
+    """
+    return stats_counter.get_filtered(f"{handler}.")
