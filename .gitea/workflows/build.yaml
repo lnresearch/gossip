@@ -30,3 +30,4 @@ jobs:
           docker tag ${REGISTRY}/${IMAGE_NAME}:${{ steps.meta.outputs.tag }} ${REGISTRY}/${IMAGE_NAME}:latest
           docker push ${REGISTRY}/${IMAGE_NAME}:${{ steps.meta.outputs.tag }}
           docker push ${REGISTRY}/${IMAGE_NAME}:latest
+
