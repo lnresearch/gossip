@@ -8,6 +8,8 @@ build:
     context: .
     docker:
       dockerfile: Dockerfile
+    platforms:
+    - linux/amd64
 deploy:
   kubectl:
     manifests:

@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import subprocess
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Dict
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -14,9 +16,46 @@ from .services.dedup import DedupService
 from .services.archiver import ArchiverService
 from .services.syncer import SyncerService
 from .stats import stats_counter
+from .gcs import GCSStorage, GCSFileListResponse, GCSFileWithAnnexStatus
+from .annex_checker import get_annex_checker
+
+logger = logging.getLogger(__name__)
+
+# Application startup time and git commit
+APP_START_TIME = datetime.now(timezone.utc)
+
+
+def _get_git_commit() -> str:
+    """Get the current git commit hash from .git_commit file or git."""
+    # Try baked-in file first (written by Dockerfile at build time)
+    commit_file = Path(__file__).parent.parent / ".git_commit"
+    try:
+        commit = commit_file.read_text().strip()
+        if commit and commit != "unknown":
+            return commit
+    except FileNotFoundError:
+        pass
+    # Fall back to git if running from a checkout
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+GIT_COMMIT = _get_git_commit()
 
 # Global services
 services: Dict[str, object] = {}
+gcs_storage = GCSStorage()
+annex_checker = get_annex_checker()
 service_tasks: Dict[str, asyncio.Task] = {}
 
 
@@ -24,31 +63,30 @@ service_tasks: Dict[str, asyncio.Task] = {}
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     config = Config()
-    
-    logger = logging.getLogger(__name__)
+
     logger.info("Starting LNR Gossip Pipeline services")
-    
+
+    # Initialize annex checker in background
+    asyncio.create_task(annex_checker.initialize())
+
     # Initialize services
     services["glbridge"] = GlbridgeService(config)
     services["dedup"] = DedupService(config)
     services["archiver"] = ArchiverService(config)
     services["syncer"] = SyncerService(config)
-    
+
     # Start services as background tasks
     for name, service in services.items():
         logger.info(f"Starting service: {name}")
-        service_tasks[name] = asyncio.create_task(
-            service.run(),
-            name=f"service_{name}"
-        )
-    
+        service_tasks[name] = asyncio.create_task(service.run(), name=f"service_{name}")
+
     logger.info("All services started")
-    
+
     yield
-    
+
     # Shutdown services
     logger.info("Shutting down services")
-    
+
     # Cancel all service tasks
     for name, task in service_tasks.items():
         logger.info(f"Stopping service: {name}")
@@ -57,19 +95,19 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
-    
+
     # Stop services gracefully
     for name, service in services.items():
-        if hasattr(service, 'stop'):
+        if hasattr(service, "stop"):
             await service.stop()
-    
+
     logger.info("All services stopped")
 
 
 app = FastAPI(
-    title="LNR Gossip Pipeline", 
+    title="LNR Gossip Pipeline",
     description="Lightning Network Research Gossip Processing Pipeline",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Setup templates directory
@@ -90,12 +128,15 @@ config = Config()
 async def dashboard(request: Request):
     """Main dashboard showing service statuses."""
     services = await status_manager.get_all_services()
-    
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "services": services,
-        "title": "LNR Gossip Pipeline Dashboard"
-    })
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "services": services,
+            "title": "LNR Gossip Pipeline Dashboard",
+        },
+    )
 
 
 @app.get("/api/status")
@@ -103,7 +144,7 @@ async def get_status():
     """API endpoint to get all service statuses."""
     global services
     service_infos = await status_manager.get_all_services()
-    
+
     # Convert to dict for JSON serialization
     result = {}
     for name, info in service_infos.items():
@@ -113,42 +154,59 @@ async def get_status():
             "last_update": info.last_update.isoformat(),
             "message_count": info.message_count,
             "error_message": info.error_message,
-            "last_message_time": info.last_message_time.isoformat() if info.last_message_time else None
+            "last_message_time": info.last_message_time.isoformat()
+            if info.last_message_time
+            else None,
         }
-        
+
         # Add archiver-specific fields
         if name == "archiver":
-            service_data.update({
-                "current_archive_messages": info.current_archive_messages,
-                "current_archive_bytes": info.current_archive_bytes,
-                "current_archive_bytes_human": _format_bytes(info.current_archive_bytes),
-            })
+            service_data.update(
+                {
+                    "current_archive_messages": info.current_archive_messages,
+                    "current_archive_bytes": info.current_archive_bytes,
+                    "current_archive_bytes_human": _format_bytes(
+                        info.current_archive_bytes
+                    ),
+                }
+            )
 
             # Calculate time to next flush using global services instance
             archiver_service = services.get("archiver")
-            if archiver_service and hasattr(archiver_service, 'calculate_next_flush_time'):
+            if archiver_service and hasattr(
+                archiver_service, "calculate_next_flush_time"
+            ):
                 next_flush = archiver_service.calculate_next_flush_time()
                 if next_flush:
                     service_data["next_flush_time"] = next_flush.isoformat()
                     from datetime import datetime, timezone
+
                     now = datetime.now(timezone.utc)
                     time_to_flush = next_flush - now
-                    service_data["time_to_next_flush_seconds"] = int(time_to_flush.total_seconds())
-                    service_data["time_to_next_flush_human"] = _format_time_duration(time_to_flush.total_seconds())
+                    service_data["time_to_next_flush_seconds"] = int(
+                        time_to_flush.total_seconds()
+                    )
+                    service_data["time_to_next_flush_human"] = _format_time_duration(
+                        time_to_flush.total_seconds()
+                    )
 
         # Add syncer-specific fields
         elif name == "syncer":
-            service_data.update({
-                "annex_total_files": info.annex_total_files,
-                "annex_local_files": info.annex_local_files,
-                "annex_remote_files": info.annex_remote_files,
-                "annex_total_size": info.annex_total_size,
-                "annex_total_size_human": _format_bytes(info.annex_total_size),
-                "last_sync_time": info.last_sync_time.isoformat() if info.last_sync_time else None,
-            })
-        
+            service_data.update(
+                {
+                    "annex_total_files": info.annex_total_files,
+                    "annex_local_files": info.annex_local_files,
+                    "annex_remote_files": info.annex_remote_files,
+                    "annex_total_size": info.annex_total_size,
+                    "annex_total_size_human": _format_bytes(info.annex_total_size),
+                    "last_sync_time": info.last_sync_time.isoformat()
+                    if info.last_sync_time
+                    else None,
+                }
+            )
+
         result[name] = service_data
-    
+
     return result
 
 
@@ -182,50 +240,65 @@ def _format_time_duration(seconds: float) -> str:
 async def get_service_status(service_name: str):
     """API endpoint to get status of a specific service."""
     info = await status_manager.get_service_info(service_name)
-    
+
     if not info:
         return {"error": f"Service {service_name} not found"}
-    
+
     service_data = {
         "name": info.name,
         "status": info.status.value,
         "last_update": info.last_update.isoformat(),
         "message_count": info.message_count,
         "error_message": info.error_message,
-        "last_message_time": info.last_message_time.isoformat() if info.last_message_time else None
+        "last_message_time": info.last_message_time.isoformat()
+        if info.last_message_time
+        else None,
     }
-    
+
     # Add archiver-specific fields
     if service_name == "archiver":
-        service_data.update({
-            "current_archive_messages": info.current_archive_messages,
-            "current_archive_bytes": info.current_archive_bytes,
-            "current_archive_bytes_human": _format_bytes(info.current_archive_bytes),
-        })
+        service_data.update(
+            {
+                "current_archive_messages": info.current_archive_messages,
+                "current_archive_bytes": info.current_archive_bytes,
+                "current_archive_bytes_human": _format_bytes(
+                    info.current_archive_bytes
+                ),
+            }
+        )
 
         # Calculate time to next flush
         global services
         archiver_service = services.get("archiver")
-        if archiver_service and hasattr(archiver_service, 'calculate_next_flush_time'):
+        if archiver_service and hasattr(archiver_service, "calculate_next_flush_time"):
             next_flush = archiver_service.calculate_next_flush_time()
             if next_flush:
                 service_data["next_flush_time"] = next_flush.isoformat()
                 from datetime import datetime, timezone
+
                 now = datetime.now(timezone.utc)
                 time_to_flush = next_flush - now
-                service_data["time_to_next_flush_seconds"] = int(time_to_flush.total_seconds())
-                service_data["time_to_next_flush_human"] = _format_time_duration(time_to_flush.total_seconds())
+                service_data["time_to_next_flush_seconds"] = int(
+                    time_to_flush.total_seconds()
+                )
+                service_data["time_to_next_flush_human"] = _format_time_duration(
+                    time_to_flush.total_seconds()
+                )
 
     # Add syncer-specific fields
     elif service_name == "syncer":
-        service_data.update({
-            "annex_total_files": info.annex_total_files,
-            "annex_local_files": info.annex_local_files,
-            "annex_remote_files": info.annex_remote_files,
-            "annex_total_size": info.annex_total_size,
-            "annex_total_size_human": _format_bytes(info.annex_total_size),
-            "last_sync_time": info.last_sync_time.isoformat() if info.last_sync_time else None,
-        })
+        service_data.update(
+            {
+                "annex_total_files": info.annex_total_files,
+                "annex_local_files": info.annex_local_files,
+                "annex_remote_files": info.annex_remote_files,
+                "annex_total_size": info.annex_total_size,
+                "annex_total_size_human": _format_bytes(info.annex_total_size),
+                "last_sync_time": info.last_sync_time.isoformat()
+                if info.last_sync_time
+                else None,
+            }
+        )
 
     return service_data
 
@@ -233,7 +306,24 @@ async def get_service_status(service_name: str):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "services": len(await status_manager.get_all_services())}
+    return {
+        "status": "healthy",
+        "services": len(await status_manager.get_all_services()),
+    }
+
+
+@app.get("/api/info")
+async def get_app_info():
+    """Get application info including uptime and git commit."""
+    now = datetime.now(timezone.utc)
+    uptime_seconds = (now - APP_START_TIME).total_seconds()
+
+    return {
+        "git_commit": GIT_COMMIT,
+        "start_time": APP_START_TIME.isoformat(),
+        "uptime_seconds": int(uptime_seconds),
+        "uptime_human": _format_time_duration(uptime_seconds),
+    }
 
 
 @app.get("/api/stats")
@@ -261,7 +351,7 @@ async def get_formatted_stats():
         if not timestamp_str:
             return "Never"
         try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
             delta = now - timestamp
 
@@ -295,7 +385,9 @@ async def get_formatted_stats():
         "invalid": all_stats.get("bridge.invalid", 0),
         "errors": all_stats.get("bridge.errors", 0),
         "publish_errors": all_stats.get("bridge.publish_errors", 0),
-        "last_processed": format_last_processed(all_stats.get("bridge.last_processed_time")),
+        "last_processed": format_last_processed(
+            all_stats.get("bridge.last_processed_time")
+        ),
         "last_processed_raw": all_stats.get("bridge.last_processed_time"),
     }
 
@@ -306,7 +398,9 @@ async def get_formatted_stats():
         "db_size": all_stats.get("dedup.db_size", 0),
         "duplicates": all_stats.get("dedup.duplicates", 0),
         "errors": all_stats.get("dedup.errors", 0),
-        "last_processed": format_last_processed(all_stats.get("dedup.last_processed_time")),
+        "last_processed": format_last_processed(
+            all_stats.get("dedup.last_processed_time")
+        ),
         "last_processed_raw": all_stats.get("dedup.last_processed_time"),
     }
 
@@ -316,12 +410,18 @@ async def get_formatted_stats():
         "incoming": all_stats.get("archiver.incoming", 0),
         "current_file_messages": all_stats.get("archiver.current_file_messages", 0),
         "current_file_bytes": all_stats.get("archiver.current_file_bytes", 0),
-        "current_file_bytes_human": _format_bytes(all_stats.get("archiver.current_file_bytes", 0)),
+        "current_file_bytes_human": _format_bytes(
+            all_stats.get("archiver.current_file_bytes", 0)
+        ),
         "current_file": all_stats.get("archiver.current_file", "N/A"),
         "seconds_since_rotation": seconds_since_rotation,
         "time_since_rotation": format_duration(seconds_since_rotation),
-        "last_rotation": format_last_processed(all_stats.get("archiver.last_rotation_time")),
-        "last_processed": format_last_processed(all_stats.get("archiver.last_processed_time")),
+        "last_rotation": format_last_processed(
+            all_stats.get("archiver.last_rotation_time")
+        ),
+        "last_processed": format_last_processed(
+            all_stats.get("archiver.last_processed_time")
+        ),
         "last_processed_raw": all_stats.get("archiver.last_processed_time"),
         "errors": all_stats.get("archiver.errors", 0),
     }
@@ -344,3 +444,98 @@ async def get_handler_stats(handler: str):
         Dictionary of statistics for the specified handler
     """
     return stats_counter.get_filtered(f"{handler}.")
+
+
+@app.get("/files", response_class=HTMLResponse)
+async def files_page(request: Request):
+    """Browse all files in GCS bucket.
+
+    Args:
+        request: FastAPI request
+
+    Returns:
+        HTML page with file list
+    """
+    try:
+        # List all files from GCS (blocking call, run in thread)
+        loop = asyncio.get_event_loop()
+        files = await loop.run_in_executor(
+            None, lambda: gcs_storage.list_files(prefix="daily/")
+        )
+
+        # Check which files are in git-annex
+        files_with_annex_status = []
+        for gcs_file in files:
+            is_annexed = await annex_checker.is_annexed(gcs_file.name)
+            files_with_annex_status.append(
+                GCSFileWithAnnexStatus.from_gcs_file(gcs_file, is_annexed)
+            )
+
+        return templates.TemplateResponse(
+            "files.html",
+            {
+                "request": request,
+                "files": files_with_annex_status,
+                "title": "GCS Files Browser",
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to list files: {e}")
+        return templates.TemplateResponse(
+            "files.html",
+            {
+                "request": request,
+                "files": [],
+                "error": str(e),
+                "title": "GCS Files Browser - Error",
+            },
+        )
+
+
+@app.get("/api/files", response_model=GCSFileListResponse)
+async def api_files() -> GCSFileListResponse:
+    """API endpoint to list all files in GCS bucket.
+
+    Returns:
+        JSON with file list
+    """
+    try:
+        # List all files from GCS (blocking call, run in thread)
+        loop = asyncio.get_event_loop()
+        files = await loop.run_in_executor(
+            None, lambda: gcs_storage.list_files(prefix="daily/")
+        )
+
+        # Check which files are in git-annex
+        files_with_annex_status = []
+        for gcs_file in files:
+            is_annexed = await annex_checker.is_annexed(gcs_file.name)
+            files_with_annex_status.append(
+                GCSFileWithAnnexStatus.from_gcs_file(gcs_file, is_annexed)
+            )
+
+        return GCSFileListResponse(
+            files=files_with_annex_status,
+            next_page_token=None,
+            count=len(files_with_annex_status),
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to list files: {e}")
+        return GCSFileListResponse(files=[], next_page_token=None, count=0)
+
+
+@app.post("/api/annex/refresh")
+async def refresh_annex():
+    """Refresh the git-annex file list.
+
+    Returns:
+        Status of the refresh operation
+    """
+    try:
+        await annex_checker.refresh_file_list()
+        return {"status": "success", "message": "Annex file list refreshed"}
+    except Exception as e:
+        logger.error(f"Failed to refresh annex: {e}")
+        return {"status": "error", "message": str(e)}

@@ -130,6 +130,30 @@
             color: #666;
             margin-top: 8px;
         }
+        .footer {
+            margin-top: 30px;
+            padding: 15px 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.875rem;
+            color: #666;
+        }
+        .footer-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .footer-label {
+            color: #999;
+        }
+        .footer-value {
+            font-family: monospace;
+            color: #333;
+        }
     </style>
 </head>
 <body>
@@ -142,6 +166,17 @@
 
         <div class="services-grid" id="services-grid">
             <!-- Services will be populated by JavaScript -->
+        </div>
+
+        <div class="footer" id="footer">
+            <div class="footer-item">
+                <span class="footer-label">Uptime:</span>
+                <span class="footer-value" id="uptime">loading...</span>
+            </div>
+            <div class="footer-item">
+                <span class="footer-label">Commit:</span>
+                <span class="footer-value" id="git-commit">loading...</span>
+            </div>
         </div>
     </div>
 
@@ -346,11 +381,25 @@
             }
         }
 
+        async function loadAppInfo() {
+            try {
+                const response = await fetch('/api/info');
+                const data = await response.json();
+
+                document.getElementById('uptime').textContent = data.uptime_human;
+                document.getElementById('git-commit').textContent = data.git_commit;
+            } catch (error) {
+                console.error('Error loading app info:', error);
+            }
+        }
+
         // Initial load
         loadStats();
+        loadAppInfo();
 
         // Auto-refresh every 5 seconds
         setInterval(loadStats, 5000);
+        setInterval(loadAppInfo, 5000);
     </script>
 </body>
 </html>

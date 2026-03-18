@@ -113,18 +113,20 @@ class GlbridgeService:
                 logger.error("  This usually means the exchange doesn't exist or has a different type")
                 raise
             
-            # Create a temporary queue for this consumer
-            logger.info("Creating temporary consumer queue...")
+            # Create a durable queue with single-active-consumer for this consumer
+            # Using durable + x-single-active-consumer instead of exclusive to avoid
+            # RESOURCE_LOCKED errors on reconnection (see AIKB: gossip/glbridge-exclusive-queue-lock)
+            logger.info("Creating consumer queue...")
             try:
                 upstream_queue = await self.upstream_channel.declare_queue(
                     "lnr.bridge",
-                    exclusive=True,  # Queue deleted when connection closes
-                    auto_delete=True
+                    durable=True,
+                    arguments={"x-single-active-consumer": True}
                 )
                 logger.info("✅ Successfully created consumer queue")
                 logger.info(f"  Queue name: {upstream_queue.name}")
-                logger.info(f"  Queue exclusive: True")
-                logger.info(f"  Queue auto_delete: True")
+                logger.info(f"  Queue durable: True")
+                logger.info(f"  Queue x-single-active-consumer: True")
             except Exception as e:
                 logger.error(f"❌ Failed to create consumer queue: {e}")
                 raise

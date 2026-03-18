@@ -173,7 +173,8 @@ class SyncerService:
                     ["git", "annex", "sync"],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=300,
                 )
 
                 # Also pull any new changes
@@ -181,7 +182,8 @@ class SyncerService:
                     ["git", "pull"],
                     capture_output=True,
                     text=True,
-                    check=False  # Don't fail if no remote is configured
+                    check=False,  # Don't fail if no remote is configured
+                    timeout=120,
                 )
 
             finally:
@@ -240,7 +242,8 @@ class SyncerService:
                     ["git", "annex", "info", "--fast"],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=60,
                 )
 
                 # Parse the output for basic stats
@@ -259,7 +262,8 @@ class SyncerService:
                         ["git", "annex", "find", "--format=${file}\\n"],
                         capture_output=True,
                         text=True,
-                        check=True
+                        check=True,
+                        timeout=120,
                     )
 
                     files = [f.strip() for f in whereis_result.stdout.split('\n') if f.strip()]

@@ -2,7 +2,7 @@
 annex-temp/
 data/annex
 data/temp
-
+annex
 # Python
 __pycache__/
 *.py[cod]

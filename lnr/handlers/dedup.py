@@ -42,7 +42,11 @@ class DedupState:
         await self.db.execute("PRAGMA temp_store=memory")
         await self.db.commit()
 
-        logger.info("Dedup database connection opened")
+        # Initialize db_size stat so dashboard shows correct count from startup
+        db_size = await self.get_db_message_count()
+        stats_counter.set("dedup.db_size", db_size)
+
+        logger.info(f"Dedup database connection opened ({db_size} messages)")
 
     async def stop(self) -> None:
         """Close database connection."""
@@ -115,8 +119,13 @@ class DedupState:
             return False
 
     async def get_db_message_count(self) -> int:
-        """Get the total number of messages in the dedup database."""
-        cursor = await self.db.execute("SELECT COUNT(*) FROM messages")
+        """Get the approximate number of messages in the dedup database.
+
+        Uses MAX(id) instead of COUNT(*) to avoid a full table scan on
+        a multi-GB database. With AUTOINCREMENT this is very close to
+        the actual count (only off if rows were deleted, which we never do).
+        """
+        cursor = await self.db.execute("SELECT MAX(id) FROM messages")
         result = await cursor.fetchone()
         return result[0] if result else 0
 

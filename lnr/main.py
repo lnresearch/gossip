@@ -62,11 +62,13 @@ upstream_exchange = RabbitExchange(
     type=ExchangeType.FANOUT,
 )
 
-# Create upstream queue for bridge (temporary, exclusive)
+# Create upstream queue for bridge with single active consumer
+# Using durable + single-active-consumer instead of exclusive to avoid
+# RESOURCE_LOCKED errors on reconnection (see gossip/glbridge-reconnection-issue.md)
 upstream_queue = RabbitQueue(
     name="lnr.bridge",
-    exclusive=True,
-    auto_delete=True,
+    durable=True,
+    arguments={"x-single-active-consumer": True},
 )
 
 

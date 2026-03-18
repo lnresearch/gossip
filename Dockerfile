@@ -7,6 +7,8 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
+    git-annex \
+    bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -20,6 +22,10 @@ RUN uv pip install --system -e .
 
 # Create directories for volumes
 RUN mkdir -p /data/annex /data/db
+
+# Build-time git commit baked into a file
+ARG GIT_COMMIT=unknown
+RUN echo "${GIT_COMMIT}" > /app/.git_commit
 
 # Set environment variables with defaults
 ENV RABBITMQ_URL="amqp://guest:guest@rabbitmq:5672/"

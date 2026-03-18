@@ -1,0 +1,32 @@
+name: Build LNR Gossip
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: registry.home.snyke.net
+  IMAGE_NAME: lnr/lnr-gossip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate tag
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ gitea.sha }}" | cut -c1-7)
+          DATE=$(date +%Y%m%d)
+          echo "tag=${DATE}-${SHORT_SHA}" >> $GITEA_OUTPUT
+
+      - name: Build and push
+        run: |
+          SHORT_SHA=$(echo "${{ gitea.sha }}" | cut -c1-7)
+          docker build --build-arg GIT_COMMIT=${SHORT_SHA} \
+            -t ${REGISTRY}/${IMAGE_NAME}:${{ steps.meta.outputs.tag }} .
+          docker tag ${REGISTRY}/${IMAGE_NAME}:${{ steps.meta.outputs.tag }} ${REGISTRY}/${IMAGE_NAME}:latest
+          docker push ${REGISTRY}/${IMAGE_NAME}:${{ steps.meta.outputs.tag }}
+          docker push ${REGISTRY}/${IMAGE_NAME}:latest

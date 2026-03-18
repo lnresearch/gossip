@@ -93,7 +93,8 @@ class UploaderService:
                 ['bzip2', '-9', str(file_path)],
                 stderr=subprocess.PIPE,
                 text=False,
-                check=True
+                check=True,
+                timeout=600,  # 10 minute timeout for large files
             )
 
             compressed_size = compressed_path.stat().st_size
@@ -184,7 +185,8 @@ class UploaderService:
                     ["git", "annex", "addurl", gcs_url, "--file", annex_filename, "--relaxed"],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=120,
                 )
                 logger.info(f"Added {annex_filename} to git-annex")
 
@@ -218,7 +220,8 @@ class UploaderService:
                     ["git", "add", f"daily/{filename}"],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=60,
                 )
 
                 # Commit
@@ -227,7 +230,8 @@ class UploaderService:
                     ["git", "commit", "-m", commit_msg],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=60,
                 )
 
                 logger.info(f"Committed {filename}")
@@ -262,7 +266,8 @@ class UploaderService:
                     ["git", "annex", "drop", "--force", annex_filename],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=60,
                 )
                 logger.info(f"Dropped local copy of {annex_filename}")
 
@@ -291,7 +296,8 @@ class UploaderService:
                     ["git", "annex", "sync", "--content"],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=300,  # 5 minute timeout for sync
                 )
                 logger.info("Git annex sync completed")
 
@@ -320,7 +326,8 @@ class UploaderService:
                     ["git", "push", self.config.github_remote],
                     capture_output=True,
                     text=True,
-                    check=True
+                    check=True,
+                    timeout=120,
                 )
                 logger.info(f"Pushed to {self.config.github_remote}")
 

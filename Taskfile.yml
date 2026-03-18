@@ -1,0 +1,31 @@
+version: '3'
+
+vars:
+  REGISTRY: registry.home.snyke.net
+  IMAGE: "{{.REGISTRY}}/lnr/lnr-gossip"
+
+tasks:
+  default:
+    desc: Build and push Docker image
+    deps: [docker-push]
+
+  docker-build:
+    desc: Build Docker image
+    cmds:
+      - docker build --platform linux/amd64 -t {{.IMAGE}}:latest .
+
+  docker-push:
+    desc: Build and push Docker image to registry
+    deps: [docker-build]
+    cmds:
+      - docker push {{.IMAGE}}:latest
+
+  docker-tag-push:
+    desc: Tag and push with a specific version
+    deps: [docker-build]
+    cmds:
+      - docker tag {{.IMAGE}}:latest {{.IMAGE}}:{{.TAG}}
+      - docker push {{.IMAGE}}:{{.TAG}}
+      - docker push {{.IMAGE}}:latest
+    requires:
+      vars: [TAG]
